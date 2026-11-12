@@ -1,0 +1,23 @@
+# Render Blueprint: Render reads this file when you create a service from this repository.
+services:
+  - type: web
+    name: bus-tracker
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    # One worker: rider locations and rate limits live in memory, so more workers would each
+    # keep their own copy.
+    startCommand: gunicorn app.main:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --timeout 120
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: AGENCY_NAME
+        value: TTC (Toronto)
+      - key: FEED_URL
+        value: https://bustime.ttc.ca/gtfsrt/vehicles
+      - key: MAP_CENTER
+        value: 43.6532,-79.3832
+      - key: MAP_ZOOM
+        value: "11"

@@ -160,7 +160,7 @@ button.plain.on-bar { color: var(--bar-text); }
 .sm-map.sm-dragging { cursor: grabbing; }
 .sm-tiles, .sm-markers { position: absolute; inset: 0; }
 .sm-tile { position: absolute; left: 0; top: 0; max-width: none; pointer-events: none; }
-.sm-marker { position: absolute; left: 0; top: 0; }
+.sm-markers .sm-marker { position: absolute; left: 0; top: 0; }
 
 .sm-credit {
   position: absolute;
@@ -196,7 +196,6 @@ button.plain.on-bar { color: var(--bar-text); }
 
 /* Buses: small route signs */
 .bus {
-  position: relative;
   display: grid;
   place-items: center;
   width: 2.2rem;

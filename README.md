@@ -1,7 +1,5 @@
 # Bus Tracker
 
-**Open the app: https://firstrepo-production-39dc.up.railway.app**
-
 A web app that shows where buses are right now. Buses come from a transit agency's public live
 feed. Riders can also choose to share their phone's location, which shows where their bus is on
 routes the agency does not cover.
@@ -38,7 +36,7 @@ the page, so there is always something to see.
 
 ## Connect a transit agency
 
-Set these in Railway (service, Variables). Only `FEED_URL` is required.
+Set these in your host's environment variables (Render: service, Environment). Only `FEED_URL` is required.
 
 | Variable | What it does | Example |
 | --- | --- | --- |
@@ -67,11 +65,18 @@ python -m unittest discover -s tests -t .
 
 Tests build their own sample feeds, so they never touch a real agency.
 
-## Deploy on Railway
+## Deploy on Render (free)
 
-1. In Railway choose **New Project, Deploy from GitHub repo**, and pick this repository.
-2. Railway reads `requirements.txt` and `railway.json`. `/health` is the health check.
-3. In the service's **Settings, Networking**, click **Generate Domain**.
+1. Sign up at render.com with GitHub (no card needed for the free plan).
+2. Choose **New, Blueprint**, and pick this repository. Render reads `render.yaml`, which sets
+   the start command, the `/health` check and the TTC feed variables.
+3. Click **Apply**. When the deploy finishes, the site address is shown on the service page.
+
+The free plan sleeps after 15 minutes without visitors and takes about a minute to wake up.
+Rider locations are forgotten when it sleeps. Open the page once before a demo.
+
+To change the agency or the map, edit the variables in `render.yaml` or in the service's
+**Environment** tab. The same app also runs on Railway (`railway.json` is kept for that).
 
 Every push to the main branch redeploys the site. Keep the app at **one worker**: rider
 locations and rate limits are kept in memory, so more workers would each have their own copy.
