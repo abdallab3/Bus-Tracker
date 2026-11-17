@@ -1,5 +1,6 @@
 """The Bus Tracker web app: a map page, bus positions from the agency's feed, and rider sharing."""
 
+import math
 import os
 import time
 from urllib.parse import urlsplit
@@ -7,12 +8,13 @@ from urllib.parse import urlsplit
 from flask import Flask, jsonify, request, send_from_directory
 
 from .config import Settings
-from .feed import AgencyFeed, DemoFeed
 from .geo import distance_m
 from .limiter import RateLimiter
 from .riders import RiderError, RiderStore
+from .systems import SYSTEM_ID, build_registry
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+MAX_STOP_SPAN = 1.0  # degrees: the widest area stops are looked up for
 SAME_BUS_METERS = 120  # a rider this close to an agency bus on the same route is on that bus
 
 
@@ -53,16 +55,38 @@ def merge_buses(agency_buses, rider_buses):
     return merged
 
 
-def create_app(settings=None, feed=None, riders=None, clock=time.time):
+def apply_route_names(buses, names):
+    """Show routes the way riders know them (504, not an internal code), with the full name."""
+    out = []
+    for b in buses:
+        b = dict(b)
+        info = names.get(b["route"])
+        if info:
+            b["route"] = info["short"] or b["route"]
+            if info["long"]:
+                b["routeName"] = info["long"]
+        out.append(b)
+    return out
+
+
+def number_arg(name):
+    try:
+        value = float(request.args.get(name, ""))
+    except ValueError:
+        return None
+    return value if math.isfinite(value) else None
+
+
+def create_app(settings=None, feed=None, riders=None, clock=time.time, environ=None, registry=None):
     settings = settings or Settings.from_env()
-    if feed is None:
-        feed = AgencyFeed(settings, clock=clock) if settings.feed_url else DemoFeed(settings, clock=clock)
+    registry = registry or build_registry(settings, feed=feed, clock=clock, environ=environ)
     riders = riders or RiderStore(settings, clock=clock)
     csp = content_security_policy(settings.tile_url)
 
     reads = RateLimiter(settings.rate_limit_reads, settings.rate_limit_read_window)
     reports = RateLimiter(settings.rate_limit_reports, settings.rate_limit_report_window)
     starts = RateLimiter(settings.rate_limit_starts, settings.rate_limit_start_window)
+    stop_reads = RateLimiter(settings.rate_limit_stops, settings.rate_limit_stops_window)
 
     app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
     app.config["MAX_CONTENT_LENGTH"] = 4 * 1024  # every request from the page is tiny
@@ -89,6 +113,16 @@ def create_app(settings=None, feed=None, riders=None, clock=time.time):
         body = request.get_json(silent=True)
         return body if isinstance(body, dict) else None
 
+    def pick_system(raw):
+        """(system, None) for a usable system id, or (None, error response). No id means the default."""
+        sid = raw if raw else registry.default_id
+        system = registry.get(sid) if isinstance(sid, str) and SYSTEM_ID.match(sid) else None
+        if system is None:
+            return None, (jsonify(error="That transit system is not known."), 404)
+        if not system.available:
+            return None, (jsonify(error=system.name + " is not connected yet. " + system.note), 404)
+        return system, None
+
     @app.get("/")
     def index():
         return send_from_directory(STATIC_DIR, "index.html")
@@ -99,15 +133,39 @@ def create_app(settings=None, feed=None, riders=None, clock=time.time):
 
     @app.get("/api/config")
     def config():
+        default = registry.get(registry.default_id)
         resp = jsonify(
-            mode=feed.mode,
-            agency=settings.agency_name,
-            center=[settings.center_lat, settings.center_lon],
-            zoom=14.0 if feed.mode == "demo" else settings.zoom,
+            mode=registry.feed(default.id).mode,
+            agency=default.name,
+            center=list(default.center),
+            zoom=default.zoom,
             tileUrl=settings.tile_url,
             attribution=settings.tile_attribution,
             refreshSeconds=int(settings.feed_refresh_seconds),
         )
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    @app.get("/api/systems")
+    def systems():
+        blocked = limited(reads, "The page is asking too often. Please wait a moment.")
+        if blocked:
+            return blocked
+        items = []
+        for sid in registry.order:
+            s = registry.get(sid)
+            items.append(
+                {
+                    "id": s.id,
+                    "name": s.name,
+                    "city": s.city,
+                    "available": s.available,
+                    "note": s.note,
+                    "center": list(s.center),
+                    "zoom": s.zoom,
+                }
+            )
+        resp = jsonify(systems=items, default=registry.default_id)
         resp.headers["Cache-Control"] = "no-store"
         return resp
 
@@ -116,24 +174,56 @@ def create_app(settings=None, feed=None, riders=None, clock=time.time):
         blocked = limited(reads, "The map is refreshing too often. Please wait a moment.")
         if blocked:
             return blocked
-        agency_buses, status = feed.read()
-        rider_buses = riders.buses()
-        merged = merge_buses(agency_buses, rider_buses)
+        system, error = pick_system(request.args.get("system"))
+        if error:
+            return error
+        system_feed = registry.feed(system.id)
+        agency_buses, status = system_feed.read()
+        static = registry.static(system.id)
+        static.ensure()
+        names = static.routes() if static.status == "ready" else {}
+        agency_buses = apply_route_names(agency_buses, names)
+        merged = merge_buses(agency_buses, riders.buses(system=system.id))
         notes = []
-        if feed.mode == "demo":
+        if system_feed.mode == "demo":
             notes.append("Demo mode: these buses are simulated. No transit agency is connected yet.")
         elif not status["ok"]:
             notes.append(status["error"] + " Showing the last positions it sent, if they are recent.")
         resp = jsonify(
-            mode=feed.mode,
-            agency=settings.agency_name,
+            mode=system_feed.mode,
+            system=system.id,
+            agency=system.name,
             serverTime=round(time.time()),
             updated=None if status["updated"] is None else round(status["updated"]),
             feedOk=status["ok"],
             buses=merged,
             routes=sorted({b["route"] for b in merged if b["route"]}, key=str.lower),
+            routeNames={b["route"]: b["routeName"] for b in merged if b.get("routeName")},
             notes=notes,
         )
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    @app.get("/api/stops")
+    def stops():
+        blocked = limited(stop_reads, "Stops are being asked for too often. Please wait a moment.")
+        if blocked:
+            return blocked
+        system, error = pick_system(request.args.get("system"))
+        if error:
+            return error
+        box = [number_arg(n) for n in ("south", "west", "north", "east")]
+        if any(v is None for v in box):
+            return jsonify(error="Send the area to look in: south, west, north and east."), 400
+        south, west, north, east = box
+        if not (-90 <= south <= north <= 90 and -180 <= west <= east <= 180):
+            return jsonify(error="That area is not valid."), 400
+        if north - south > MAX_STOP_SPAN or east - west > MAX_STOP_SPAN:
+            return jsonify(error="Zoom in to see stops."), 400
+        static = registry.static(system.id)
+        static.ensure()
+        found, truncated = static.stops_in(south, west, north, east, settings.max_stops) if static.status == "ready" else ([], False)
+        resp = jsonify(state=static.status, stops=found, truncated=truncated)
         resp.headers["Cache-Control"] = "no-store"
         return resp
 
@@ -142,11 +232,14 @@ def create_app(settings=None, feed=None, riders=None, clock=time.time):
         body = body_dict()
         if body is None:
             return jsonify(error="Send the route you are on."), 400
+        system, error = pick_system(body.get("system") if isinstance(body.get("system"), str) else "")
+        if error:
+            return error
         blocked = limited(starts, "You have started sharing a lot in a short time. Please wait a little.")
         if blocked:
             return blocked
         try:
-            sid = riders.start(body.get("route"), client_ip(request, settings.trusted_proxy_hops))
+            sid = riders.start(body.get("route"), client_ip(request, settings.trusted_proxy_hops), system.id)
         except RiderError as e:
             return jsonify(error=e.message), e.status
         return jsonify(session=sid, minSeconds=settings.rider_min_interval)

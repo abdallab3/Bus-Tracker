@@ -105,6 +105,19 @@
     this.setView((south + north) / 2, (west + east) / 2, zoom);
   };
 
+  // The place on the map under a point of the map box (sx, sy in pixels from its top left).
+  SimpleMap.prototype.latLngAt = function (sx, sy) {
+    var c = project(this.lat, this.lon, this.zoom);
+    return unproject(c.x - this.width() / 2 + sx, c.y - this.height() / 2 + sy, this.zoom);
+  };
+
+  // The box of the world the map shows right now.
+  SimpleMap.prototype.getBounds = function () {
+    var nw = this.latLngAt(0, 0);
+    var se = this.latLngAt(this.width(), this.height());
+    return { south: se.lat, west: nw.lon, north: nw.lat, east: se.lon };
+  };
+
   SimpleMap.prototype.panBy = function (dx, dy) {
     var c = project(this.lat, this.lon, this.zoom);
     var p = unproject(c.x - dx, c.y - dy, this.zoom);
@@ -204,6 +217,7 @@
     if (viewChanged) {
       void this.markerPane.offsetWidth; // apply the instant move before gliding is allowed again
       this.markerPane.classList.remove("sm-instant");
+      if (this.onChange) this.onChange();
     }
   };
 
@@ -255,6 +269,14 @@
     });
 
     function end(e) {
+      var p = self.pointers[e.pointerId];
+      var single = Object.keys(self.pointers).length === 1;
+      var onThing = e.target.closest && e.target.closest(".sm-marker, .sm-zoom");
+      if (e.type === "pointerup" && p && single && p.moved <= 6 && !onThing && self.onTap) {
+        var rect = el.getBoundingClientRect();
+        var spot = self.latLngAt(e.clientX - rect.left, e.clientY - rect.top);
+        self.onTap(spot.lat, spot.lon);
+      }
       delete self.pointers[e.pointerId];
       if (Object.keys(self.pointers).length < 2) self.pinch = null;
       if (!Object.keys(self.pointers).length) el.classList.remove("sm-dragging");

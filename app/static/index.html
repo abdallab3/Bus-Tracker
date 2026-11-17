@@ -16,11 +16,19 @@
         <p id="status" aria-live="polite">Loading buses...</p>
       </div>
       <div class="bar-filter">
-        <label for="bus-search">Find a bus</label>
+        <label for="bus-search" class="sr-only">Find a bus</label>
         <div class="combo">
-          <input id="bus-search" type="text" role="combobox" aria-expanded="false" aria-controls="bus-suggest" aria-autocomplete="list" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="20" placeholder="Route or bus number">
+          <input id="bus-search" type="text" role="combobox" aria-expanded="false" aria-controls="bus-suggest" aria-autocomplete="list" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="20" placeholder="Find a bus: route or number">
           <ul id="bus-suggest" role="listbox" aria-label="Matching routes and buses" hidden></ul>
         </div>
+      </div>
+      <div class="bar-tools">
+        <button id="system-open" type="button" class="tool" hidden></button>
+        <div class="layers" role="group" aria-label="What to show on the map">
+          <button id="layer-buses" type="button" class="tool" aria-pressed="true">Buses</button>
+          <button id="layer-stops" type="button" class="tool" aria-pressed="false">Stops</button>
+        </div>
+        <button id="near-open" type="button" class="tool">Near me</button>
       </div>
       <div id="tags-row" class="tags-row" hidden>
         <ul id="tags" class="tags" aria-label="Buses shown on the map"></ul>
@@ -36,6 +44,8 @@
         <ul id="list-items"></ul>
       </details>
 
+      <p id="stops-hint" class="hint" role="status" hidden></p>
+
       <p class="legend" aria-hidden="true">
         <span class="key agency"></span>Agency feed
         <span class="key riders"></span>Reported by riders
@@ -46,6 +56,24 @@
         <h2 id="info-title"></h2>
         <p id="info-source"></p>
         <p id="info-detail"></p>
+      </section>
+
+      <section id="near" class="panel sheet" hidden aria-labelledby="near-title">
+        <h2 id="near-title">Buses near you</h2>
+        <p id="near-summary">Choose where you are to see the buses around you.</p>
+        <div class="row">
+          <button id="near-locate" type="button" class="action">Use my location</button>
+          <button id="near-pick" type="button" class="action alt">Pick a spot on the map</button>
+        </div>
+        <label for="near-radius">Show buses within</label>
+        <select id="near-radius"></select>
+        <ul id="near-list" class="near-list"></ul>
+        <p id="near-error" class="error" role="alert" hidden></p>
+        <p class="fine">Your location stays in your browser. It is not saved or shared with other riders.</p>
+        <div class="row">
+          <button id="near-clear" type="button" class="plain" hidden>Show the whole system again</button>
+          <button id="near-close" type="button" class="plain">Close</button>
+        </div>
       </section>
 
       <section id="share" class="panel sheet" hidden aria-labelledby="share-title">
@@ -70,6 +98,14 @@
 
       <button id="share-open" type="button" class="share-open">Share my bus</button>
     </main>
+  </div>
+  <div id="system-pick" class="overlay" hidden>
+    <section class="picker" role="dialog" aria-modal="true" aria-labelledby="system-title">
+      <h2 id="system-title">Which transit system?</h2>
+      <p>Pick one to see only its buses. You can change it any time.</p>
+      <ul id="system-list" class="system-list"></ul>
+      <button id="system-close" type="button" class="plain" hidden>Close</button>
+    </section>
   </div>
   <script src="/static/map.js"></script>
   <script src="/static/app.js"></script>

@@ -22,6 +22,15 @@ the page, so there is always something to see.
    as a tag, and the map shows only the tagged buses. Add as many as you like, remove a tag with
    its x, or choose **Show all buses**. Your tags are remembered in your own browser.
 
+5. **Choosing a transit system.** The first time, the app asks which system to show (TTC,
+   MiWay and so on) and then shows only that system's buses. The **system button** at the top
+   changes it. Systems with no public live feed yet are listed greyed out, with the reason.
+6. **Buses and Stops buttons.** Each turns its layer on or off. With both on you see stops and
+   buses together. Stops appear once you zoom in close, and come from the agency's schedule
+   file (GTFS), which is downloaded in the background the first time it is needed.
+7. **Near me.** Use your location, or pick a spot on the map, and the map shows only buses
+   within 0.5, 1 or 2 km, closest first. Your location stays in your browser.
+
 ## Privacy and safety
 
 - Sharing is opt-in, and it stops when the rider taps Stop, closes the page, or goes quiet for
@@ -47,6 +56,22 @@ Set these in your host's environment variables (Render: service, Environment). O
 | `MAP_ZOOM` | How close the map opens (2 to 18) | `12` |
 | `FEED_REFRESH_SECONDS` | Longest the app waits between feed requests (5 or more) | `10` |
 | `TILE_URL`, `TILE_ATTRIBUTION` | The map picture provider (defaults to OpenStreetMap) | |
+
+### Transit systems
+
+TTC and MiWay are built in. YRT, Brampton Transit and GO Transit are listed but need a live feed
+address first (YRT shares it after a request form, GO needs a Metrolinx key, and no public
+Brampton feed was found). Once you have one, add it without changing any code, using the
+system's name in capitals:
+
+| Variable | What it does |
+| --- | --- |
+| `SYSTEM_YRT_FEED_URL` | Makes YRT available with this vehicle positions address |
+| `SYSTEM_YRT_STOPS_URL` | The schedule zip (GTFS), for stops and route names |
+| `SYSTEM_YRT_FEED_HEADERS` | Headers such as an API key, as JSON |
+
+The same three work for `BRAMPTON` and `GO`, and can replace the TTC and MiWay addresses
+(`SYSTEM_TTC_FEED_URL`, and so on). Set `BUILTIN_SYSTEMS=off` to use only `FEED_URL`.
 
 Some agencies put the key in the address (`...?key=YOUR_KEY`) and some in a header. Put it in
 whichever place the agency's instructions say. Find your agency's feed on its developer page, or
@@ -86,8 +111,10 @@ locations and rate limits are kept in memory, so more workers would each have th
 - **Sharing with the screen off.** A web page can only read location while it is open on the
   screen. The page asks the phone to keep the screen on, but background sharing needs a phone
   app downloaded from an app store, which is a separate project. The server would stay the same.
-- **Route names.** The feed gives route codes, which are sometimes not the number riders know. Reading the agency's
-  schedule files (GTFS) would add names, stops and route lines.
+- **Route lines.** Route names and stops come from the schedule file, but the path each route
+  follows is not drawn yet.
+- **Typing an address.** Near me uses your location or a spot you tap. Looking up a typed
+  address needs a separate geocoding service.
 - **Checking a rider is on the right bus.** Today the app checks that a rider is moving at bus
   speed, not that they are on the route's path.
 - **Predicted arrival times.** Only current positions are shown.

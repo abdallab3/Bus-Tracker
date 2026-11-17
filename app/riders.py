@@ -31,6 +31,7 @@ class Session:
     route: str
     ip: str
     started: float
+    system: str = ""
     last_report: float | None = None
     lat: float | None = None
     lon: float | None = None
@@ -74,7 +75,7 @@ class RiderStore:
 
     # -- a rider's actions ----------------------------------------------------------
 
-    def start(self, route, ip):
+    def start(self, route, ip, system=""):
         route = clean_route(route)
         now = self.clock()
         with self._lock:
@@ -84,7 +85,7 @@ class RiderStore:
             if sum(1 for x in self._sessions.values() if x.ip == ip) >= self.s.max_riders_per_visitor:
                 raise RiderError("This device is already sharing from several places. Stop one first.", 429)
             sid = secrets.token_urlsafe(16)
-            self._sessions[sid] = Session(id=sid, route=route, ip=ip, started=now)
+            self._sessions[sid] = Session(id=sid, route=route, ip=ip, started=now, system=system)
             return sid
 
     def report(self, sid, lat, lon, accuracy):
@@ -128,21 +129,22 @@ class RiderStore:
 
     # -- what everyone else sees ----------------------------------------------------
 
-    def buses(self):
-        """One bus per group of nearby riders on the same route."""
+    def buses(self, system=None):
+        """One bus per group of nearby riders on the same route (of one system, if given)."""
         now = self.clock()
         with self._lock:
             self._expire(now)
             moving = [
                 x
                 for x in self._sessions.values()
-                if x.lat is not None
+                if (system is None or x.system == system)
+                and x.lat is not None
                 and x.last_moved is not None
                 and now - x.last_moved <= self.s.rider_move_window
             ]
         by_route = {}
         for x in sorted(moving, key=lambda r: r.started):
-            by_route.setdefault(x.route.lower(), []).append(x)
+            by_route.setdefault((x.system, x.route.lower()), []).append(x)
         buses = []
         for key, riders in by_route.items():
             clusters = []
