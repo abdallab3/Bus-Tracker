@@ -23,13 +23,32 @@ STOPS = (
 ROUTES = "route_id,route_short_name,route_long_name\n504,504,King\n7,,Bathurst Local\n"
 
 
-def make_zip(stops=STOPS, routes=ROUTES):
+TRIPS = (
+    "route_id,shape_id,direction_id\n"
+    + "504,s1,0\n" * 3 + "504,s2,0\n"  # most trips use s1, so s2 is left out
+    + "504,s3,1\n" * 2
+    + "7,s4,\n" * 5 + "7,s5,\n" * 2 + "7,s6,\n"  # no direction: the two most used shapes
+)
+SHAPES = (
+    "shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence\n"
+    "s1,43.6500,-79.3900,2\n"  # out of order on purpose
+    "s1,43.6490,-79.3900,1\n"
+    "s1,43.64901,-79.39001,1.5\n"  # about a meter from the first point, so dropped
+    "s1,43.6500,-79.3800,3\n"
+    "s2,43.0,-79.0,1\ns2,43.1,-79.1,2\n"
+    "s3,43.6500,-79.3800,1\ns3,43.6490,-79.3900,2\n"
+    "s4,43.7,-79.4,1\ns4,43.7,-79.3,2\n"
+    "s5,43.8,-79.4,1\ns5,43.8,-79.3,2\n"
+    "s6,43.9,-79.4,1\ns6,43.9,-79.3,2\n"
+)
+
+
+def make_zip(stops=STOPS, routes=ROUTES, trips=TRIPS, shapes=SHAPES):
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w") as z:
-        if stops is not None:
-            z.writestr("stops.txt", stops)
-        if routes is not None:
-            z.writestr("routes.txt", routes)
+        for name, text in (("stops.txt", stops), ("routes.txt", routes), ("trips.txt", trips), ("shapes.txt", shapes)):
+            if text is not None:
+                z.writestr(name, text)
     return out.getvalue()
 
 
@@ -141,6 +160,49 @@ class StaticStoreTests(unittest.TestCase):
         s = StaticStore("https://x.example/a.zip", Settings(), session=session, clock=clock, background=False)
         s.ensure()
         self.assertEqual(s.error, "The agency's schedule file could not be reached.")
+
+
+class RouteLines(unittest.TestCase):
+    def test_a_route_gets_its_most_used_path_in_each_direction(self):
+        s, _, _ = store()
+        s.ensure()
+        self.assertEqual(s.lines_status, "ready")
+        lines = s.route_lines("504")
+        self.assertEqual(len(lines), 2)  # s1 for direction 0 and s3 for direction 1, not s2
+        self.assertEqual(lines[0], [[43.649, -79.39], [43.65, -79.39], [43.65, -79.38]])  # in order, close point dropped
+        self.assertEqual(lines[1], [[43.65, -79.38], [43.649, -79.39]])
+
+    def test_a_route_with_no_direction_gets_its_two_most_used_paths(self):
+        s, _, _ = store()
+        s.ensure()
+        lines = s.route_lines("7")  # route 7 has no short name, so it is found by its code
+        self.assertEqual([line[0][0] for line in lines], [43.7, 43.8])
+
+    def test_routes_can_be_found_by_the_short_name_riders_know(self):
+        routes = "route_id,route_short_name,route_long_name\n9001,504,King\n"
+        trips = "route_id,shape_id,direction_id\n9001,s1,0\n"
+        s, _, _ = store(content=make_zip(routes=routes, trips=trips))
+        s.ensure()
+        self.assertEqual(len(s.route_lines("504")), 1)
+        self.assertEqual(len(s.route_lines("9001")), 1)
+        self.assertEqual(s.route_lines("999"), [])
+
+    def test_missing_path_files_still_give_stops(self):
+        s, _, _ = store(content=make_zip(shapes=None))
+        s.ensure()
+        self.assertEqual(s.status, "ready")
+        self.assertEqual(s.lines_status, "ready")
+        self.assertEqual(s.route_lines("504"), [])
+        self.assertEqual(len(s.stops_in(43.60, -79.40, 43.70, -79.30, 10)[0]), 2)
+
+    def test_a_route_with_too_many_points_is_thinned_not_cut_off(self):
+        from app.static_data import _fit
+
+        line = [[43.0 + i * 0.001, -79.0] for i in range(1001)]
+        fitted = _fit([line], limit=100)
+        self.assertLessEqual(len(fitted[0]), 102)
+        self.assertEqual(fitted[0][0], line[0])
+        self.assertEqual(fitted[0][-1], line[-1])
 
 
 class DemoStopsTests(unittest.TestCase):
@@ -263,6 +325,42 @@ class SystemsApi(unittest.TestCase):
         client, _, _ = two_system_app()
         self.assertEqual(client.post("/api/riders/start", json={"route": "9", "system": "yrt"}).status_code, 404)
         self.assertEqual(client.post("/api/riders/start", json={"route": "9", "system": "zzz"}).status_code, 404)
+
+
+class RouteLinesApi(unittest.TestCase):
+    def test_the_page_can_ask_for_a_routes_lines(self):
+        client, registry, _ = two_system_app()
+        registry.static("ttc").ensure()
+        data = client.get("/api/route-lines?system=ttc&route=504").get_json()
+        self.assertEqual(data["state"], "ready")
+        self.assertEqual(len(data["lines"]), 2)
+
+    def test_an_unknown_route_has_no_lines(self):
+        client, registry, _ = two_system_app()
+        registry.static("ttc").ensure()
+        self.assertEqual(client.get("/api/route-lines?system=ttc&route=zzz").get_json()["lines"], [])
+
+    def test_a_system_with_no_schedule_says_so(self):
+        client, _, _ = two_system_app()
+        data = client.get("/api/route-lines?system=miway&route=101").get_json()
+        self.assertEqual((data["state"], data["lines"]), ("off", []))
+
+    def test_bad_requests_are_refused(self):
+        client, _, _ = two_system_app()
+        self.assertEqual(client.get("/api/route-lines?system=ttc").status_code, 400)
+        self.assertEqual(client.get("/api/route-lines?system=ttc&route=" + "x" * 41).status_code, 400)
+        self.assertEqual(client.get("/api/route-lines?system=nope&route=1").status_code, 404)
+
+    def test_route_line_lookups_are_rate_limited(self):
+        client, registry, _ = two_system_app(rate_limit_stops=2)
+        codes = [client.get("/api/route-lines?system=ttc&route=504").status_code for _ in range(4)]
+        self.assertEqual(codes, [200, 200, 429, 429])
+
+    def test_the_demo_routes_have_lines(self):
+        stops = DemoStops(DemoFeed(Settings()))
+        self.assertEqual(len(stops.route_lines("A")), 1)
+        self.assertEqual(len(stops.route_lines("B")[0]), 3)
+        self.assertEqual(stops.route_lines("Z"), [])
 
 
 class StopsApi(unittest.TestCase):

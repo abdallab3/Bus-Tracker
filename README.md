@@ -21,6 +21,8 @@ the page, so there is always something to see.
 4. **Choosing buses.** The **Find a bus** box searches routes and bus numbers. Picking one adds it
    as a tag, and the map shows only the tagged buses. Add as many as you like, remove a tag with
    its x, or choose **Show all buses**. Your tags are remembered in your own browser.
+   Each chosen route also draws its line on the map, in its own color. The same color
+   appears on the tag and as a ring around that route's buses.
 
 5. **Choosing a transit system.** The first time, the app asks which system to show (TTC,
    MiWay and so on) and then shows only that system's buses. The **system button** at the top
@@ -111,8 +113,9 @@ locations and rate limits are kept in memory, so more workers would each have th
 - **Sharing with the screen off.** A web page can only read location while it is open on the
   screen. The page asks the phone to keep the screen on, but background sharing needs a phone
   app downloaded from an app store, which is a separate project. The server would stay the same.
-- **Route lines.** Route names and stops come from the schedule file, but the path each route
-  follows is not drawn yet.
+- **Route lines depend on the schedule file.** Lines come from its shapes. If an agency leaves
+  them out, the route is still tagged but no line is drawn. Only the most used path in each
+  direction is shown.
 - **Typing an address.** Near me uses your location or a spot you tap. Looking up a typed
   address needs a separate geocoding service.
 - **Checking a rider is on the right bus.** Today the app checks that a rider is moving at bus

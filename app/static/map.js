@@ -4,6 +4,7 @@
 
   var TILE = 256;
   var MAX_LAT = 85.0511;
+  var SVG = "http://www.w3.org/2000/svg";
 
   function project(lat, lon, zoom) {
     var size = TILE * Math.pow(2, zoom);
@@ -33,6 +34,7 @@
     this.zoom = Math.max(this.minZoom, Math.min(this.maxZoom, options.zoom));
     this.tiles = {};
     this.markers = [];
+    this.lines = [];
     this.pointers = {};
     this.pinch = null;
     this.scheduled = false;
@@ -40,9 +42,13 @@
     container.classList.add("sm-map");
     this.tilePane = document.createElement("div");
     this.tilePane.className = "sm-tiles";
+    this.linePane = document.createElementNS(SVG, "svg");
+    this.linePane.setAttribute("class", "sm-lines");
+    this.linePane.setAttribute("aria-hidden", "true");
     this.markerPane = document.createElement("div");
     this.markerPane.className = "sm-markers";
     container.appendChild(this.tilePane);
+    container.appendChild(this.linePane);
     container.appendChild(this.markerPane);
 
     var credit = document.createElement("p");
@@ -153,6 +159,31 @@
     };
   };
 
+  // A line over the map, such as a bus route. Points are [lat, lon] pairs. It is drawn with a white
+  // edge so it shows on any map picture. Returns a handle with setHidden and remove.
+  SimpleMap.prototype.addLine = function (points, color) {
+    var group = document.createElementNS(SVG, "g");
+    var casing = document.createElementNS(SVG, "path");
+    var path = document.createElementNS(SVG, "path");
+    casing.setAttribute("class", "sm-line-casing");
+    path.setAttribute("class", "sm-line");
+    path.setAttribute("stroke", color);
+    group.appendChild(casing);
+    group.appendChild(path);
+    this.linePane.appendChild(group);
+    var line = { points: points, group: group, casing: casing, path: path };
+    this.lines.push(line);
+    this.schedule();
+    var map = this;
+    return {
+      setHidden: function (hidden) { group.style.display = hidden ? "none" : ""; },
+      remove: function () {
+        map.lines = map.lines.filter(function (l) { return l !== line; });
+        group.remove();
+      },
+    };
+  };
+
   SimpleMap.prototype.render = function () {
     var w = this.width();
     var h = this.height();
@@ -209,6 +240,16 @@
     this.lastView = view;
     if (viewChanged) this.markerPane.classList.add("sm-instant");
     var c = project(this.lat, this.lon, this.zoom);
+    for (var j = 0; j < this.lines.length; j++) {
+      var pts = this.lines[j].points;
+      var d = "";
+      for (var k = 0; k < pts.length; k++) {
+        var q = project(pts[k][0], pts[k][1], this.zoom);
+        d += (k ? "L" : "M") + (q.x - c.x + w / 2).toFixed(1) + " " + (q.y - c.y + h / 2).toFixed(1);
+      }
+      this.lines[j].casing.setAttribute("d", d);
+      this.lines[j].path.setAttribute("d", d);
+    }
     for (var i = 0; i < this.markers.length; i++) {
       var m = this.markers[i];
       var p = project(m.lat, m.lon, this.zoom);

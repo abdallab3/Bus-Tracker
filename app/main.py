@@ -87,6 +87,7 @@ def create_app(settings=None, feed=None, riders=None, clock=time.time, environ=N
     reports = RateLimiter(settings.rate_limit_reports, settings.rate_limit_report_window)
     starts = RateLimiter(settings.rate_limit_starts, settings.rate_limit_start_window)
     stop_reads = RateLimiter(settings.rate_limit_stops, settings.rate_limit_stops_window)
+    line_reads = RateLimiter(settings.rate_limit_stops, settings.rate_limit_stops_window)
 
     app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
     app.config["MAX_CONTENT_LENGTH"] = 4 * 1024  # every request from the page is tiny
@@ -224,6 +225,25 @@ def create_app(settings=None, feed=None, riders=None, clock=time.time, environ=N
         static.ensure()
         found, truncated = static.stops_in(south, west, north, east, settings.max_stops) if static.status == "ready" else ([], False)
         resp = jsonify(state=static.status, stops=found, truncated=truncated)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    @app.get("/api/route-lines")
+    def route_lines():
+        blocked = limited(line_reads, "Route lines are being asked for too often. Please wait a moment.")
+        if blocked:
+            return blocked
+        system, error = pick_system(request.args.get("system"))
+        if error:
+            return error
+        route = (request.args.get("route") or "").strip()
+        if not route or len(route) > 40:
+            return jsonify(error="Send the route to draw."), 400
+        static = registry.static(system.id)
+        static.ensure()
+        state = static.status if static.status != "ready" else static.lines_status
+        lines = static.route_lines(route) if state == "ready" else []
+        resp = jsonify(state=state, lines=lines)
         resp.headers["Cache-Control"] = "no-store"
         return resp
 

@@ -42,6 +42,8 @@
   var LAYERS_KEY = "busTrackerLayers";
   var SYSTEM_KEY = "busTrackerSystem";
   var MAX_TAGS = 20;
+  // Route lines and the tags that go with them each get their own colour.
+  var PALETTE = ["#d55e00", "#0072b2", "#009e73", "#c2185b", "#7b3fa0", "#00838f", "#8d5524", "#5d6d00"];
 
   var useMph = /^en-US/i.test(navigator.language || "");
   var config = null;
@@ -58,6 +60,8 @@
   var layers = { buses: true, stops: false };
   var near = null; // where the person is: {lat, lon, radius}
   var youMarker = null;
+  var routeLines = {}; // route -> {handles, retry, system}: lines drawn for chosen routes
+  var lineCache = {}; // "system|route" -> lines already fetched
   var picking = false;
   var last = { serverTime: null, updated: null, mode: "demo", agency: "", notes: [], feedOk: true };
 
@@ -171,7 +175,18 @@
     arrow.hidden = b.bearing === null;
     if (b.bearing !== null) arrow.style.transform = "rotate(" + b.bearing + "deg)";
     node.setAttribute("aria-label", busName(b) + ". " + sourceText(b) + " Updated " + ago(b.age) + ".");
+    tint(b);
     m.handle.setHidden(!isShown(b));
+  }
+
+  // Buses on a chosen route get a ring in the same colour as the route's line and tag.
+  function tint(b) {
+    var m = markers[b.id];
+    if (!m) return;
+    var color = b.route ? routeColor(b.route) : "";
+    m.el.classList.toggle("tinted", !!color);
+    if (color) m.el.style.setProperty("--route", color);
+    else m.el.style.removeProperty("--route");
   }
 
   function clearBuses() {
@@ -485,9 +500,11 @@
       try { localStorage.setItem(SYSTEM_KEY, s.id); } catch (err) { /* storage can be off */ }
     }
     clearBuses();
+    Object.keys(routeLines).forEach(removeLine);
     tags = loadTags();
     fitPending = tags.length > 0;
     renderTags();
+    syncLines();
     shareEl.hidden = true;
     stopToken += 1;
     removeStopMarkers();
@@ -641,6 +658,49 @@
     map.onTap = function (lat, lon) { stopPicking(); setNear(lat, lon); };
   });
 
+  // ---------------------------------------------------------------- route lines
+
+  function removeLine(route) {
+    var entry = routeLines[route];
+    if (!entry) return;
+    clearTimeout(entry.retry);
+    entry.handles.forEach(function (h) { h.remove(); });
+    delete routeLines[route];
+  }
+
+  function drawLines(route, color, lines) {
+    var entry = routeLines[route];
+    if (!entry) return;
+    lines.forEach(function (points) { entry.handles.push(map.addLine(points, color)); });
+  }
+
+  function loadLine(route, color) {
+    if (!map || !system) return;
+    var entry = routeLines[route] = routeLines[route] || { handles: [], retry: null, system: system.id };
+    var key = system.id + "|" + route;
+    if (lineCache[key]) { drawLines(route, color, lineCache[key]); return; }
+    fetch("/api/route-lines?" + systemQuery() + "&route=" + encodeURIComponent(route), { cache: "no-store" })
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (data) {
+        if (routeLines[route] !== entry) return; // no longer chosen, or the system changed
+        if (!data || data.state === "loading") { entry.retry = setTimeout(function () { loadLine(route, color); }, 5000); return; }
+        if (data.state !== "ready") return; // this system has no schedule file, so there are no lines
+        lineCache[key] = data.lines || [];
+        drawLines(route, color, lineCache[key]);
+      })
+      .catch(function () {
+        if (routeLines[route] === entry) entry.retry = setTimeout(function () { loadLine(route, color); }, 15000);
+      });
+  }
+
+  // Draw a line for each chosen route, in the route's colour, and remove the ones no longer chosen.
+  function syncLines() {
+    var wanted = {};
+    tags.forEach(function (t) { if (t.type === "route") wanted[t.value] = t.color; });
+    Object.keys(routeLines).forEach(function (route) { if (!wanted[route]) removeLine(route); });
+    Object.keys(wanted).forEach(function (route) { if (!routeLines[route]) loadLine(route, wanted[route]); });
+  }
+
   // ---------------------------------------------------------------- search and tags
 
   function isShown(b) {
@@ -663,12 +723,44 @@
       t.value.length > 0 && t.value.length <= 40;
   }
 
+  function routeColor(route) {
+    for (var i = 0; i < tags.length; i++) {
+      if (tags[i].type === "route" && tags[i].value === route) return tags[i].color || "";
+    }
+    return "";
+  }
+
+  // The first colour no chosen route is using; once all are used, colours repeat.
+  function nextColor() {
+    var used = tags.filter(function (t) { return t.type === "route" && t.color; }).map(function (t) { return t.color; });
+    for (var i = 0; i < PALETTE.length; i++) {
+      if (used.indexOf(PALETTE[i]) < 0) return PALETTE[i];
+    }
+    return PALETTE[used.length % PALETTE.length];
+  }
+
+  function giveColors(list) {
+    var chosen = [];
+    list.forEach(function (t) {
+      if (t.type !== "route") return;
+      if (PALETTE.indexOf(t.color) < 0 || chosen.indexOf(t.color) >= 0) t.color = "";
+      if (t.color) chosen.push(t.color);
+    });
+    list.forEach(function (t) {
+      if (t.type !== "route" || t.color) return;
+      var free = PALETTE.filter(function (c) { return chosen.indexOf(c) < 0; });
+      t.color = free.length ? free[0] : PALETTE[chosen.length % PALETTE.length];
+      chosen.push(t.color);
+    });
+    return list;
+  }
+
   function tagsKey() { return TAGS_KEY + (system && system.id ? ":" + system.id : ""); }
 
   function loadTags() {
     try {
       var list = JSON.parse(localStorage.getItem(tagsKey()) || "[]");
-      return Array.isArray(list) ? list.filter(validTag).slice(0, MAX_TAGS) : [];
+      return Array.isArray(list) ? giveColors(list.filter(validTag).slice(0, MAX_TAGS)) : [];
     } catch (err) {
       return [];
     }
@@ -682,6 +774,12 @@
     tagsEl.textContent = "";
     tags.forEach(function (t, index) {
       var item = el("li");
+      if (t.type === "route" && t.color) {
+        var swatch = el("span", "swatch");
+        swatch.style.backgroundColor = t.color;
+        swatch.setAttribute("aria-hidden", "true");
+        item.appendChild(swatch);
+      }
       item.appendChild(el("span", "", tagName(t)));
       var remove = el("button", "", "×");
       remove.type = "button";
@@ -696,8 +794,9 @@
   function applyFilter(fit) {
     buses.forEach(function (b) {
       var m = markers[b.id];
-      if (m) m.handle.setHidden(!isShown(b));
+      if (m) { tint(b); m.handle.setHidden(!isShown(b)); }
     });
+    syncLines();
     var selected = buses.filter(function (b) { return b.id === selectedId; })[0];
     if (selected && !isShown(selected)) {
       clearSelection();
@@ -723,7 +822,7 @@
 
   function addTag(tag) {
     if (hasTag(tag.type, tag.value) || tags.length >= MAX_TAGS) return;
-    tags.push({ type: tag.type, value: tag.value });
+    tags.push(tag.type === "route" ? { type: tag.type, value: tag.value, color: nextColor() } : { type: tag.type, value: tag.value });
     saveTags();
     searchEl.value = "";
     closeSuggestions();

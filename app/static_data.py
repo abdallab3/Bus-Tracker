@@ -13,13 +13,17 @@ import zipfile
 
 import requests
 
-from .geo import is_valid_position
+from .geo import distance_m, is_valid_position
 
 CHUNK = 65536
 MAX_STOP_FILE = 40_000_000  # bytes, after unzipping
 MAX_ROUTE_FILE = 5_000_000
 MAX_STOPS = 150_000
 MAX_ROUTES = 20_000
+MAX_TRIP_FILE = 250_000_000
+MAX_SHAPE_FILE = 400_000_000
+THIN_METERS = 12  # route lines drop points closer together than this
+MAX_LINE_POINTS = 6000  # most points sent for one route
 
 
 class StaticError(Exception):
@@ -79,6 +83,63 @@ def parse_routes(rows):
     return routes
 
 
+def parse_trip_shapes(rows):
+    """For each route, the shape most trips follow in each direction: {route_id: [shape_id, ...]}."""
+    counts = {}
+    for row in rows:
+        route_id = (row.get("route_id") or "").strip()
+        shape_id = (row.get("shape_id") or "").strip()
+        if not route_id or not shape_id:
+            continue
+        group = counts.setdefault((route_id, (row.get("direction_id") or "").strip()), {})
+        group[shape_id] = group.get(shape_id, 0) + 1
+    chosen = {}
+    for (route_id, direction), group in counts.items():
+        ranked = sorted(group, key=lambda sid: (-group[sid], sid))
+        chosen.setdefault(route_id, []).extend(ranked[: 1 if direction else 2])
+    return {route_id: list(dict.fromkeys(ids)) for route_id, ids in chosen.items()}
+
+
+def _thin(points):
+    kept = [points[0]]
+    for point in points[1:-1]:
+        if distance_m(kept[-1][0], kept[-1][1], point[0], point[1]) >= THIN_METERS:
+            kept.append(point)
+    kept.append(points[-1])
+    return kept
+
+
+def parse_shapes(rows, wanted):
+    """The paths of the wanted shapes, in order, with points that are too close together dropped."""
+    found = {}
+    for row in rows:
+        shape_id = (row.get("shape_id") or "").strip()
+        if shape_id not in wanted:
+            continue
+        try:
+            seq = float(row.get("shape_pt_sequence", ""))
+            lat, lon = float(row.get("shape_pt_lat", "")), float(row.get("shape_pt_lon", ""))
+        except (TypeError, ValueError):
+            continue
+        if is_valid_position(lat, lon):
+            found.setdefault(shape_id, []).append((seq, lat, lon))
+    lines = {}
+    for shape_id, points in found.items():
+        points.sort()
+        if len(points) >= 2:
+            lines[shape_id] = [[round(lat, 5), round(lon, 5)] for lat, lon in _thin([(la, lo) for _, la, lo in points])]
+    return lines
+
+
+def _fit(lines, limit=MAX_LINE_POINTS):
+    """Keep every line but thin them evenly if together they have too many points."""
+    total = sum(len(line) for line in lines)
+    if total <= limit:
+        return lines
+    step = -(-total // limit)
+    return [line[::step] + ([line[-1]] if (len(line) - 1) % step else []) for line in lines]
+
+
 class StaticStore:
     """Stops and route names for one agency, loaded from its GTFS zip."""
 
@@ -94,6 +155,8 @@ class StaticStore:
         self._loaded = None
         self._failed = None
         self._loading = False
+        self._route_lines = {}
+        self._lines_loaded = None
         self.error = None
 
     @property
@@ -106,6 +169,13 @@ class StaticStore:
         if self._failed is not None and not self._loading:
             return "failed"
         return "loading"
+
+    @property
+    def lines_status(self):
+        """Route lines load after the stops: off, loading or ready (ready can still have no lines)."""
+        if not self.url:
+            return "off"
+        return "ready" if self._lines_loaded is not None else "loading"
 
     def ensure(self):
         """Start loading if the data is missing or old. Returns at once."""
@@ -139,9 +209,25 @@ class StaticStore:
         finally:
             resp.close()
 
+    def _load_lines(self, archive):
+        """Route paths are a nice extra: if they cannot be read, the stops and names still work."""
+        lines = {}
+        try:
+            by_route = parse_trip_shapes(_rows(archive, "trips.txt", MAX_TRIP_FILE))
+            wanted = {sid for ids in by_route.values() for sid in ids}
+            shapes = parse_shapes(_rows(archive, "shapes.txt", MAX_SHAPE_FILE), wanted)
+            for route_id, ids in by_route.items():
+                got = [shapes[sid] for sid in ids if sid in shapes]
+                if got:
+                    lines[route_id] = got
+        except Exception:
+            lines = {}
+        with self._lock:
+            self._route_lines = lines
+            self._lines_loaded = self.clock()
+
     def _run(self):
         error = None
-        stops, routes = None, None
         try:
             with tempfile.TemporaryFile() as tmp:
                 self._download(tmp)
@@ -152,6 +238,10 @@ class StaticStore:
                         routes = parse_routes(_rows(archive, "routes.txt", MAX_ROUTE_FILE))
                     except StaticError:
                         routes = {}  # route names are a nice extra, the stops are what matters
+                    with self._lock:  # stops are usable now; route paths follow
+                        self._stops, self._routes, self._loaded = stops, routes, self.clock()
+                        self._failed, self.error = None, None
+                    self._load_lines(archive)
         except StaticError as e:
             error = str(e)
         except zipfile.BadZipFile:
@@ -160,17 +250,26 @@ class StaticStore:
             error = "The agency's schedule file could not be reached."
         except Exception:
             error = "The agency's schedule file could not be read."
-        now = self.clock()
         with self._lock:
             self._loading = False
-            if error is None:
-                self._stops, self._routes, self._loaded, self._failed, self.error = stops, routes, now, None, None
-            else:
-                self._failed, self.error = now, error  # keep older data, if there is any
+            if error is not None:
+                self._failed, self.error = self.clock(), error  # keep older data, if there is any
 
     def routes(self):
         with self._lock:
             return self._routes
+
+    def route_lines(self, route):
+        """The paths of a route, named the way riders know it (504) or by its code: lists of [lat, lon]."""
+        with self._lock:
+            routes, lines = self._routes, self._route_lines
+        ids = [rid for rid, info in routes.items() if rid == route or info["short"] == route]
+        if route in lines and route not in ids:
+            ids.append(route)
+        found = []
+        for rid in ids:
+            found.extend(lines.get(rid, []))
+        return _fit(found)
 
     def stops_in(self, south, west, north, east, limit):
         """Stops inside the box, nearest to its middle first when there are too many."""
@@ -189,9 +288,12 @@ class DemoStops:
     """Made-up stops along the demo route, so the stops button has something to show."""
 
     status = "ready"
+    lines_status = "ready"
     error = None
 
     def __init__(self, feed, spacing_m=600):
+        self._loop = [[round(a, 5), round(b, 5)] for a, b in feed.loop]
+        self._line = [[round(a, 5), round(b, 5)] for a, b in feed.line]
         total = sum(feed._lengths(feed.loop))
         count = max(4, int(total // spacing_m))
         self._stops = []
@@ -206,6 +308,9 @@ class DemoStops:
 
     def routes(self):
         return {}
+
+    def route_lines(self, route):
+        return {"A": [self._loop], "B": [self._line]}.get(route, [])
 
     def stops_in(self, south, west, north, east, limit):
         inside = [s for s in self._stops if south <= s["lat"] <= north and west <= s["lon"] <= east]
