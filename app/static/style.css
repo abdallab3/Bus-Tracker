@@ -432,8 +432,36 @@ button.bus-row:focus-visible { outline: 3px solid var(--focus); outline-offset: 
 }
 .info h2, .sheet h2 { margin: 0 0 0.3rem; font-size: 1.25rem; line-height: 1.2; letter-spacing: -0.01em; }
 .info p, .sheet p { margin: 0.2rem 0; }
-.info .close { position: absolute; top: 0.6rem; right: 0.8rem; }
-.info h2 { padding-right: 4rem; }
+.info .close, .sheet .close { position: absolute; top: 0.6rem; right: 0.8rem; }
+.info h2, #alerts h2 { padding-right: 4rem; }
+.info h3 { margin: 0.7rem 0 0.2rem; font-size: 1rem; }
+.arrivals, .alerts-list { margin: 0; padding: 0; list-style: none; }
+.arrivals li { display: flex; align-items: baseline; justify-content: space-between; gap: 0.6rem; padding: 0.25rem 0; border-top: 1px solid var(--line); }
+.arrivals li:first-child { border-top: 0; }
+.arrivals .when { flex: none; font-weight: 800; }
+.arrivals .late { color: var(--bad); font-size: 0.85rem; font-weight: 600; }
+.arrivals .none { display: block; color: var(--muted); }
+.alerts-list li { margin: 0.5rem 0 0; padding: 0.5rem 0.6rem; border: 2px solid var(--line); border-radius: 8px; }
+.alerts-list li.mine { border-color: var(--bad); }
+.alerts-list strong { display: block; }
+.alerts-list .routes { color: var(--muted); font-size: 0.85rem; }
+.alerts-list .mine-tag { color: var(--bad); font-size: 0.85rem; font-weight: 800; }
+.alerts-list p { margin: 0.25rem 0 0; }
+.alerts-open {
+  position: absolute;
+  z-index: 4;
+  top: 5.2rem;
+  right: 0.75rem;
+  padding: 0.3rem 0.6rem;
+  color: #ffffff;
+  background: var(--bad);
+  border: 2px solid var(--field-line);
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+@media (prefers-color-scheme: dark) { .alerts-open { color: #0c1424; } }
 
 .sheet label { display: block; margin: 0.6rem 0 0.25rem; font-weight: 700; }
 .sheet select, .sheet input[type="text"] {

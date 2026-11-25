@@ -56,6 +56,15 @@
         <h2 id="info-title"></h2>
         <p id="info-source"></p>
         <p id="info-detail"></p>
+        <h3 id="arrivals-title" hidden>Next buses here</h3>
+        <ul id="info-arrivals" class="arrivals" hidden></ul>
+      </section>
+
+      <button id="alerts-open" type="button" class="alerts-open" hidden></button>
+      <section id="alerts" class="panel sheet" hidden aria-labelledby="alerts-title">
+        <button id="alerts-close" type="button" class="plain close" aria-label="Close service alerts">Close</button>
+        <h2 id="alerts-title">Service alerts</h2>
+        <ul id="alerts-list" class="alerts-list"></ul>
       </section>
 
       <section id="near" class="panel sheet" hidden aria-labelledby="near-title">

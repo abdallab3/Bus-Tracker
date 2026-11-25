@@ -101,6 +101,17 @@ def filter_buses(buses, routes=None, box=None):
 MAX_ROUTE_FILTERS = 20
 
 
+def route_label(names, route_id):
+    """(the number riders know, the full name) for a route code, when the schedule has it."""
+    info = names.get(route_id)
+    return (info["short"] or route_id, info["long"]) if info else (route_id, "")
+
+
+MAX_ARRIVALS = 8
+ARRIVAL_WINDOW_SECONDS = 6 * 3600
+MAX_ALERTS_SENT = 50
+
+
 def create_app(settings=None, feed=None, riders=None, clock=time.time, environ=None, registry=None):
     settings = settings or Settings.from_env()
     registry = registry or build_registry(settings, feed=feed, clock=clock, environ=environ)
@@ -294,6 +305,98 @@ def create_app(settings=None, feed=None, riders=None, clock=time.time, environ=N
         state = static.status if static.status != "ready" else static.lines_status
         lines = static.route_lines(route) if state == "ready" else []
         resp = jsonify(state=state, lines=lines)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    arrival_index = {}  # system id -> (feed time, {stop id: [(time, route, delay), ...]})
+
+    def arrivals_by_stop(system_id, updates, stamp):
+        cached = arrival_index.get(system_id)
+        if cached and cached[0] == stamp:
+            return cached[1]
+        index = {}
+        for update in updates:
+            for stop in update["stops"]:
+                if stop["time"] is not None:
+                    index.setdefault(stop["stop"], []).append((stop["time"], update["route"], stop["delay"]))
+        arrival_index[system_id] = (stamp, index)
+        return index
+
+    def route_names(system_id):
+        static = registry.static(system_id)
+        static.ensure()
+        return static.routes() if static.status == "ready" else {}
+
+    @app.get("/api/arrivals")
+    def arrivals():
+        blocked = limited(stop_reads, "Arrival times are being asked for too often. Please wait a moment.")
+        if blocked:
+            return blocked
+        system, error = pick_system(request.args.get("system"))
+        if error:
+            return error
+        stop = (request.args.get("stop") or "").strip()
+        if not stop or len(stop) > 40:
+            return jsonify(error="Send the stop to look up."), 400
+        feed = registry.trips(system.id)
+        if feed is None:
+            return jsonify(state="off", arrivals=[])
+        updates, status = feed.read()
+        now = clock()
+        names = route_names(system.id)
+        found = []
+        for when, route, delay in arrivals_by_stop(system.id, updates, status["updated"]).get(stop, []):
+            if now - 30 <= when <= now + ARRIVAL_WINDOW_SECONDS:
+                short, long = route_label(names, route)
+                found.append(
+                    {
+                        "route": short,
+                        "routeName": long,
+                        "time": when,
+                        "minutes": max(0, round((when - now) / 60)),
+                        "delayMinutes": None if delay is None else round(delay / 60),
+                    }
+                )
+        found.sort(key=lambda a: a["time"])
+        state = "ok" if status["updated"] is not None else "error"
+        resp = jsonify(state=state, arrivals=found[:MAX_ARRIVALS], updated=None if status["updated"] is None else round(status["updated"]))
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    @app.get("/api/alerts")
+    def alerts():
+        blocked = limited(reads, "Alerts are being asked for too often. Please wait a moment.")
+        if blocked:
+            return blocked
+        system, error = pick_system(request.args.get("system"))
+        if error:
+            return error
+        feed = registry.alerts(system.id)
+        if feed is None:
+            return jsonify(state="off", alerts=[])
+        items, status = feed.read()
+        now = clock()
+        names = route_names(system.id)
+        merged = {}
+        for a in items:
+            periods = a["periods"]
+            if periods and not any(
+                (p["start"] is None or p["start"] <= now) and (p["end"] is None or now <= p["end"]) for p in periods
+            ):
+                continue  # not in effect right now
+            key = (a["header"], a["description"])
+            entry = merged.setdefault(
+                key, {"id": a["id"], "header": a["header"], "description": a["description"], "routes": set(), "effect": a["effect"]}
+            )
+            entry["routes"].update(route_label(names, r)[0] for r in a["routes"])
+        out = []
+        for entry in merged.values():
+            entry["routes"] = sorted(entry["routes"], key=str.lower)[:20]
+            out.append(entry)
+            if len(out) >= MAX_ALERTS_SENT:
+                break
+        state = "ok" if status["updated"] is not None else "error"
+        resp = jsonify(state=state, alerts=out)
         resp.headers["Cache-Control"] = "no-store"
         return resp
 

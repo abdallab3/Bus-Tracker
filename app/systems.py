@@ -14,6 +14,7 @@ import time
 from dataclasses import dataclass, replace
 
 from .feed import AgencyFeed, DemoFeed
+from .realtime import alert_feed, trip_update_feed
 from .static_data import DemoStops, StaticStore
 
 SYSTEM_ID = re.compile(r"^[a-z0-9_-]{1,20}$")
@@ -28,6 +29,8 @@ class System:
     zoom: float
     feed_url: str = ""  # live vehicle positions (GTFS-Realtime)
     stops_url: str = ""  # the schedule zip (GTFS), for stops and route names
+    trips_url: str = ""  # trip updates (GTFS-Realtime), for next arrivals
+    alerts_url: str = ""  # service alerts (GTFS-Realtime)
     headers: tuple = ()
     available: bool = False
     note: str = ""  # why it is not available yet
@@ -42,6 +45,8 @@ BUILTIN = (
         zoom=11,
         feed_url="https://bustime.ttc.ca/gtfsrt/vehicles",
         stops_url="http://opendata.toronto.ca/toronto.transit.commission/ttc-routes-and-schedules/OpenData_TTC_Schedules.zip",
+        trips_url="https://bustime.ttc.ca/gtfsrt/trips",
+        alerts_url="https://bustime.ttc.ca/gtfsrt/alerts",
     ),
     System(
         id="miway",
@@ -104,8 +109,13 @@ def build_systems(settings, environ=None):
             feed = _web_address(environ.get(key + "FEED_URL")) or base.feed_url
             stops = _web_address(environ.get(key + "STOPS_URL")) or base.stops_url
             headers = _headers(environ.get(key + "FEED_HEADERS")) or base.headers
+            trips = _web_address(environ.get(key + "TRIPS_URL")) or base.trips_url
+            alerts = _web_address(environ.get(key + "ALERTS_URL")) or base.alerts_url
             systems.append(
-                replace(base, feed_url=feed, stops_url=stops, headers=headers, available=bool(feed), note="" if feed else base.note)
+                replace(
+                    base, feed_url=feed, stops_url=stops, trips_url=trips, alerts_url=alerts, headers=headers,
+                    available=bool(feed), note="" if feed else base.note,
+                )
             )
     legacy = _web_address(settings.feed_url)
     if legacy and all(s.feed_url != legacy for s in systems):
@@ -118,6 +128,8 @@ def build_systems(settings, environ=None):
                 zoom=settings.zoom,
                 feed_url=legacy,
                 stops_url=_web_address(environ.get("STOPS_URL")),
+                trips_url=_web_address(environ.get("TRIPS_URL")),
+                alerts_url=_web_address(environ.get("ALERTS_URL")),
                 headers=settings.feed_headers,
                 available=True,
             )
@@ -135,6 +147,7 @@ class Registry:
         self.order = [s.id for s in systems]
         self._feeds = dict(feeds or {})
         self._statics = {}
+        self._extras = {}
 
     @property
     def default_id(self):
@@ -153,6 +166,26 @@ class Registry:
                 replace(self.settings, feed_url=s.feed_url, feed_headers=s.headers), clock=self.clock
             )
         return self._feeds[sid]
+
+    def _extra(self, sid, kind):
+        key = (sid, kind)
+        if key not in self._extras:
+            s = self.systems[sid]
+            url = s.trips_url if kind == "trips" else s.alerts_url
+            if not url:
+                self._extras[key] = None
+            else:
+                make = trip_update_feed if kind == "trips" else alert_feed
+                self._extras[key] = make(url, s.headers, self.settings, clock=self.clock)
+        return self._extras[key]
+
+    def trips(self, sid):
+        """The trip updates feed for a system, or None if it has none."""
+        return self._extra(sid, "trips")
+
+    def alerts(self, sid):
+        """The service alerts feed for a system, or None if it has none."""
+        return self._extra(sid, "alerts")
 
     def static(self, sid):
         if sid not in self._statics:

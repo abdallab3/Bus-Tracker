@@ -34,6 +34,8 @@
   var nearRadius = $("near-radius");
   var nearClear = $("near-clear");
   var hintEl = $("stops-hint");
+  var alertsEl = $("alerts");
+  var alertsOpen = $("alerts-open");
   var pickEl = $("system-pick");
   var systemOpen = $("system-open");
 
@@ -65,6 +67,10 @@
   var lastRequestKey = "";
   var pollSeq = 0;
   var busTimer = null;
+  var arrivalsTimer = null;
+  var arrivalsFor = null;
+  var alertsData = [];
+  var alertsTimer = null;
   var routeLines = {}; // route -> {handles, retry, system}: lines drawn for chosen routes
   var lineCache = {}; // "system|route" -> lines already fetched
   var picking = false;
@@ -223,6 +229,8 @@
     if (markers[id]) markers[id].el.classList.add("selected");
     shareEl.hidden = true;
     nearEl.hidden = true;
+    alertsEl.hidden = true;
+    clearArrivals();
     $("info-title").textContent = busName(b);
     $("info-source").textContent = sourceText(b);
     $("info-detail").textContent = ("Updated " + ago(b.age) + ". " + speedText(b.speed)).trim();
@@ -235,11 +243,118 @@
     if (stopMarkers[stop.id]) stopMarkers[stop.id].el.classList.add("selected");
     shareEl.hidden = true;
     nearEl.hidden = true;
+    alertsEl.hidden = true;
     $("info-title").textContent = stop.name;
     $("info-source").textContent = "Bus stop";
     $("info-detail").textContent = stop.code ? "Stop number " + stop.code + "." : "";
     infoEl.hidden = false;
+    showArrivals(stop);
   }
+
+  // ---------------------------------------------------------------- next arrivals at a stop
+
+  function clearArrivals() {
+    clearInterval(arrivalsTimer);
+    arrivalsTimer = null;
+    arrivalsFor = null;
+    $("arrivals-title").hidden = true;
+    $("info-arrivals").hidden = true;
+    $("info-arrivals").textContent = "";
+  }
+
+  function renderArrivals(data) {
+    var list = $("info-arrivals");
+    list.textContent = "";
+    var message = null;
+    if (data.state === "off") message = "Arrival times are not available for " + (system ? system.name : "this system") + " yet.";
+    else if (data.state !== "ok") message = "Arrival times could not be loaded right now.";
+    else if (!data.arrivals.length) message = "No buses are due here soon.";
+    if (message) {
+      list.appendChild(el("li", "none", message));
+    } else {
+      data.arrivals.forEach(function (a) {
+        var item = el("li");
+        item.appendChild(el("span", "", "Route " + a.route + (a.routeName ? " " + a.routeName : "")));
+        var when = el("span", "when", a.minutes === 0 ? "due now" : "in " + a.minutes + " min");
+        if (a.delayMinutes !== null && a.delayMinutes >= 2) when.appendChild(el("span", "late", " " + a.delayMinutes + " min late"));
+        item.appendChild(when);
+        list.appendChild(item);
+      });
+    }
+    $("arrivals-title").hidden = false;
+    list.hidden = false;
+  }
+
+  function loadArrivals(stopId) {
+    fetch("/api/arrivals?" + systemQuery() + "&stop=" + encodeURIComponent(stopId), { cache: "no-store" })
+      .then(function (response) { return response.ok ? response.json() : { state: "error", arrivals: [] }; })
+      .then(function (data) { if (arrivalsFor === stopId) renderArrivals(data); })
+      .catch(function () { if (arrivalsFor === stopId) renderArrivals({ state: "error", arrivals: [] }); });
+  }
+
+  function showArrivals(stop) {
+    clearArrivals();
+    arrivalsFor = stop.id;
+    loadArrivals(stop.id);
+    arrivalsTimer = setInterval(function () { loadArrivals(stop.id); }, 15000);
+  }
+
+  // ---------------------------------------------------------------- service alerts
+
+  function chosenRoutes() {
+    return tags.filter(function (t) { return t.type === "route"; }).map(function (t) { return t.value; });
+  }
+
+  function alertIsMine(a) {
+    var mine = chosenRoutes();
+    return a.routes.some(function (r) { return mine.indexOf(r) >= 0; });
+  }
+
+  function renderAlertsBadge() {
+    var count = alertsData.length;
+    alertsOpen.hidden = !count;
+    if (!count) { alertsEl.hidden = true; return; }
+    var mine = alertsData.filter(alertIsMine).length;
+    alertsOpen.textContent = (count === 1 ? "1 service alert" : count + " service alerts") + (mine ? " (" + mine + " on your routes)" : "");
+  }
+
+  function renderAlerts() {
+    var list = $("alerts-list");
+    list.textContent = "";
+    var sorted = alertsData.slice().sort(function (a, b) { return Number(alertIsMine(b)) - Number(alertIsMine(a)); });
+    sorted.forEach(function (a) {
+      var item = el("li", alertIsMine(a) ? "mine" : "");
+      if (alertIsMine(a)) item.appendChild(el("span", "mine-tag", "On a route you chose"));
+      item.appendChild(el("strong", "", a.header || "Service alert"));
+      if (a.routes.length) item.appendChild(el("span", "routes", "Routes: " + a.routes.join(", ")));
+      if (a.description) item.appendChild(el("p", "", a.description));
+      list.appendChild(item);
+    });
+  }
+
+  function loadAlerts() {
+    if (!system) return;
+    var wanted = system.id;
+    fetch("/api/alerts?" + systemQuery(), { cache: "no-store" })
+      .then(function (response) { return response.ok ? response.json() : { alerts: [] }; })
+      .then(function (data) {
+        if (!system || system.id !== wanted) return;
+        alertsData = data.state === "ok" ? data.alerts : [];
+        renderAlertsBadge();
+        if (!alertsEl.hidden) renderAlerts();
+      })
+      .catch(function () { /* alerts are an extra: stay quiet if they cannot load */ });
+  }
+
+  alertsOpen.addEventListener("click", function () {
+    infoEl.hidden = true;
+    shareEl.hidden = true;
+    nearEl.hidden = true;
+    clearArrivals();
+    alertsEl.hidden = !alertsEl.hidden;
+    if (!alertsEl.hidden) renderAlerts();
+  });
+  $("alerts-close").addEventListener("click", function () { alertsEl.hidden = true; });
 
   // One row in a list of buses: a small route sign, the name, and a quiet second line.
   function busRow(b, detail, onPick) {
@@ -549,6 +664,9 @@
       try { localStorage.setItem(SYSTEM_KEY, s.id); } catch (err) { /* storage can be off */ }
     }
     clearBuses();
+    clearArrivals();
+    alertsData = [];
+    renderAlertsBadge();
     Object.keys(routeLines).forEach(removeLine);
     tags = loadTags();
     fitPending = tags.length > 0;
@@ -566,6 +684,7 @@
     hidePicker();
     poll();
     refreshStops();
+    loadAlerts();
   }
 
   systemOpen.addEventListener("click", showPicker);
@@ -659,6 +778,8 @@
   $("near-open").addEventListener("click", function () {
     infoEl.hidden = true;
     shareEl.hidden = true;
+    alertsEl.hidden = true;
+    clearArrivals();
     nearEl.hidden = !nearEl.hidden;
     if (!nearEl.hidden) renderNear();
   });
@@ -846,6 +967,7 @@
       if (m) { tint(b); m.handle.setHidden(!isShown(b)); }
     });
     syncLines();
+    renderAlertsBadge();
     var selected = buses.filter(function (b) { return b.id === selectedId; })[0];
     if (selected && !isShown(selected)) {
       clearSelection();
@@ -995,6 +1117,7 @@
 
   $("info-close").addEventListener("click", function () {
     infoEl.hidden = true;
+    clearArrivals();
     clearSelection();
   });
 
@@ -1121,6 +1244,8 @@
   shareOpen.addEventListener("click", function () {
     infoEl.hidden = true;
     nearEl.hidden = true;
+    alertsEl.hidden = true;
+    clearArrivals();
     shareEl.hidden = !shareEl.hidden;
     renderShare();
   });
@@ -1161,6 +1286,7 @@
       });
       map.onChange = function () { scheduleStops(); scheduleBuses(); };
       renderRoutes();
+      setInterval(function () { if (document.visibilityState === "visible") loadAlerts(); }, 60000);
       setInterval(function () {
         if (document.visibilityState === "visible") poll();
       }, Math.max(5, data.refreshSeconds) * 1000);
