@@ -1,8 +1,11 @@
 """The Bus Tracker web app: a map page, bus positions from the agency's feed, and rider sharing."""
 
+import gzip
+import ipaddress
 import math
 import os
 import time
+from collections import Counter
 from urllib.parse import urlsplit
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -18,8 +21,14 @@ MAX_STOP_SPAN = 1.0  # degrees: the widest area stops are looked up for
 SAME_BUS_METERS = 120  # a rider this close to an agency bus on the same route is on that bus
 
 
-def client_ip(req, hops):
-    """The visitor's address. Behind Railway's proxy it is the last entry the proxy added."""
+def client_ip(req, hops, header=""):
+    """The visitor's address. Use the header the host sets just for it, if one is configured (and
+    holds a real address). Otherwise it is the entry the nearest trusted proxy added."""
+    if header:
+        try:
+            return str(ipaddress.ip_address(req.headers.get(header, "").strip()))
+        except ValueError:
+            pass  # missing or not an address: fall back to the forwarded list
     forwarded = [p.strip() for p in req.headers.get("X-Forwarded-For", "").split(",") if p.strip()]
     if hops > 0 and len(forwarded) >= hops:
         return forwarded[-hops]
@@ -77,6 +86,21 @@ def number_arg(name):
     return value if math.isfinite(value) else None
 
 
+def filter_buses(buses, routes=None, box=None):
+    """Only the buses on the given routes and/or inside the box (south, west, north, east)."""
+    out = buses
+    if routes:
+        wanted = set(routes)
+        out = [b for b in out if b["route"] in wanted]
+    if box:
+        south, west, north, east = box
+        out = [b for b in out if south <= b["lat"] <= north and west <= b["lon"] <= east]
+    return out
+
+
+MAX_ROUTE_FILTERS = 20
+
+
 def create_app(settings=None, feed=None, riders=None, clock=time.time, environ=None, registry=None):
     settings = settings or Settings.from_env()
     registry = registry or build_registry(settings, feed=feed, clock=clock, environ=environ)
@@ -99,10 +123,25 @@ def create_app(settings=None, feed=None, riders=None, clock=time.time, environ=N
         response.headers["Content-Security-Policy"] = csp
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Permissions-Policy"] = "geolocation=(self), camera=(), microphone=()"
+        # Bus lists are big and repeat a lot, so compress them for browsers that accept it.
+        if (
+            response.mimetype == "application/json"
+            and response.status_code == 200
+            and not response.direct_passthrough
+            and "Content-Encoding" not in response.headers
+            and "gzip" in request.headers.get("Accept-Encoding", "").lower()
+        ):
+            body = response.get_data()
+            if len(body) > 1024:
+                packed = gzip.compress(body, compresslevel=5)
+                response.set_data(packed)
+                response.headers["Content-Encoding"] = "gzip"
+                response.headers["Content-Length"] = str(len(packed))
+                response.headers["Vary"] = "Accept-Encoding"
         return response
 
     def limited(limiter, message):
-        allowed, wait = limiter.allow(client_ip(request, settings.trusted_proxy_hops))
+        allowed, wait = limiter.allow(client_ip(request, settings.trusted_proxy_hops, settings.client_ip_header))
         if allowed:
             return None
         resp = jsonify(error=message)
@@ -185,6 +224,15 @@ def create_app(settings=None, feed=None, riders=None, clock=time.time, environ=N
         names = static.routes() if static.status == "ready" else {}
         agency_buses = apply_route_names(agency_buses, names)
         merged = merge_buses(agency_buses, riders.buses(system=system.id))
+        wanted_routes = [r.strip() for r in request.args.get("routes", "").split(",") if r.strip()]
+        if len(wanted_routes) > MAX_ROUTE_FILTERS or any(len(r) > 40 for r in wanted_routes):
+            return jsonify(error="Too many routes to filter by."), 400
+        box = None
+        if any(n in request.args for n in ("south", "west", "north", "east")):
+            values = [number_arg(n) for n in ("south", "west", "north", "east")]
+            if any(v is None for v in values) or values[0] > values[2] or values[1] > values[3]:
+                return jsonify(error="Send the whole area: south, west, north and east."), 400
+            box = tuple(values)
         notes = []
         if system_feed.mode == "demo":
             notes.append("Demo mode: these buses are simulated. No transit agency is connected yet.")
@@ -197,7 +245,9 @@ def create_app(settings=None, feed=None, riders=None, clock=time.time, environ=N
             serverTime=round(time.time()),
             updated=None if status["updated"] is None else round(status["updated"]),
             feedOk=status["ok"],
-            buses=merged,
+            buses=filter_buses(merged, wanted_routes, box),
+            total=len(merged),
+            routeCounts={r: n for r, n in Counter(b["route"] for b in merged if b["route"]).items()},
             routes=sorted({b["route"] for b in merged if b["route"]}, key=str.lower),
             routeNames={b["route"]: b["routeName"] for b in merged if b.get("routeName")},
             notes=notes,
@@ -259,7 +309,7 @@ def create_app(settings=None, feed=None, riders=None, clock=time.time, environ=N
         if blocked:
             return blocked
         try:
-            sid = riders.start(body.get("route"), client_ip(request, settings.trusted_proxy_hops), system.id)
+            sid = riders.start(body.get("route"), client_ip(request, settings.trusted_proxy_hops, settings.client_ip_header), system.id)
         except RiderError as e:
             return jsonify(error=e.message), e.status
         return jsonify(session=sid, minSeconds=settings.rider_min_interval)

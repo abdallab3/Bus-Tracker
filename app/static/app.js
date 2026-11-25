@@ -60,6 +60,11 @@
   var layers = { buses: true, stops: false };
   var near = null; // where the person is: {lat, lon, radius}
   var youMarker = null;
+  var routeCounts = {}; // route -> how many buses it has in all (the list on screen may hold fewer)
+  var coverBox = null; // the area the last request covered, when it was for the map view
+  var lastRequestKey = "";
+  var pollSeq = 0;
+  var busTimer = null;
   var routeLines = {}; // route -> {handles, retry, system}: lines drawn for chosen routes
   var lineCache = {}; // "system|route" -> lines already fetched
   var picking = false;
@@ -297,6 +302,7 @@
     };
     buses = data.buses || [];
     routeNames = data.routeNames || {};
+    routeCounts = data.routeCounts || {};
     var key = (data.routes || []).join("\u0000") + "|" + JSON.stringify(routeNames);
     if (key !== routeKey) { routeKey = key; routes = data.routes || []; renderRoutes(); }
     var seen = {};
@@ -318,20 +324,63 @@
 
   // ---------------------------------------------------------------- loading
 
+  // Ask only for the buses that matter: the chosen routes, the area around you, or what is in view.
+  // That keeps each refresh small, which matters on a phone.
+  function busRequest() {
+    var parts = [];
+    if (systemQuery()) parts.push(systemQuery());
+    var key = "all";
+    var box = null;
+    if (tags.length && tags.every(function (t) { return t.type === "route"; })) {
+      var list = tags.map(function (t) { return t.value; });
+      parts.push("routes=" + encodeURIComponent(list.join(",")));
+      key = "routes:" + list.join("\u0000");
+    } else if (!tags.length && near) {
+      var d = (near.radius / 111320) * 1.5;
+      var dl = d / Math.max(0.2, Math.cos((near.lat * Math.PI) / 180));
+      box = { south: near.lat - d, west: near.lon - dl, north: near.lat + d, east: near.lon + dl };
+      key = "near:" + near.lat.toFixed(4) + "," + near.lon.toFixed(4) + "," + near.radius;
+    } else if (!tags.length && map) {
+      var b = map.getBounds();
+      var padLat = (b.north - b.south) * 0.4;
+      var padLon = (b.east - b.west) * 0.4;
+      box = { south: b.south - padLat, west: b.west - padLon, north: b.north + padLat, east: b.east + padLon };
+      key = "view";
+    }
+    if (box) {
+      ["south", "west", "north", "east"].forEach(function (k) { parts.push(k + "=" + box[k].toFixed(5)); });
+    }
+    return { query: parts.join("&"), key: key, box: key === "view" ? box : null };
+  }
+
   function poll() {
     if (!system) return;
     var wanted = system.id;
-    fetch("/api/buses" + (systemQuery() ? "?" + systemQuery() : ""), { cache: "no-store" })
+    var request = busRequest();
+    var mine = ++pollSeq;
+    lastRequestKey = request.key;
+    coverBox = request.box;
+    fetch("/api/buses" + (request.query ? "?" + request.query : ""), { cache: "no-store" })
       .then(function (response) {
         if (response.status === 429) throw new Error("The map is refreshing too often. Retrying shortly.");
         if (!response.ok) throw new Error("Could not load buses. Retrying shortly.");
         return response.json();
       })
       .then(function (data) {
-        if (!system || system.id !== wanted) return; // the person switched systems meanwhile
+        if (!system || system.id !== wanted || mine !== pollSeq) return; // switched system, or a newer request is out
         applyData(data);
       })
-      .catch(function (err) { statusEl.textContent = err.message || "Could not load buses. Retrying shortly."; });
+      .catch(function (err) { if (mine === pollSeq) statusEl.textContent = err.message || "Could not load buses. Retrying shortly."; });
+  }
+
+  // When the map moves outside the area already loaded, load the new area.
+  function scheduleBuses() {
+    clearTimeout(busTimer);
+    busTimer = setTimeout(function () {
+      if (!map || !system || lastRequestKey !== "view" || !coverBox) return;
+      var v = map.getBounds();
+      if (v.south < coverBox.south || v.north > coverBox.north || v.west < coverBox.west || v.east > coverBox.east) poll();
+    }, 500);
   }
 
   // ---------------------------------------------------------------- layers: buses and stops
@@ -805,6 +854,7 @@
     renderTags();
     renderStatus();
     renderList();
+    if (busRequest().key !== lastRequestKey) poll(); // the choice changed what needs loading
     if (fit) fitToShown();
   }
 
@@ -826,6 +876,7 @@
     saveTags();
     searchEl.value = "";
     closeSuggestions();
+    fitPending = true; // fit again once the chosen routes' buses have loaded
     applyFilter(true);
   }
 
@@ -850,7 +901,7 @@
       var byCode = r.toLowerCase().indexOf(q);
       var byName = name.toLowerCase().indexOf(q);
       if (q && byCode < 0 && byName < 0) return;
-      var n = buses.filter(function (b) { return b.route === r; }).length;
+      var n = routeCounts[r] !== undefined ? routeCounts[r] : buses.filter(function (b) { return b.route === r; }).length;
       found.push({
         type: "route",
         value: r,
@@ -1108,7 +1159,7 @@
         tileUrl: data.tileUrl,
         attribution: data.attribution,
       });
-      map.onChange = scheduleStops;
+      map.onChange = function () { scheduleStops(); scheduleBuses(); };
       renderRoutes();
       setInterval(function () {
         if (document.visibilityState === "visible") poll();

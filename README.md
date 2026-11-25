@@ -24,13 +24,15 @@ the page, so there is always something to see.
    Each chosen route also draws its line on the map, in its own color. The same color
    appears on the tag and as a ring around that route's buses.
 
-5. **Choosing a transit system.** The first time, the app asks which system to show (TTC,
+5. **Light refreshes.** The page asks only for the buses it needs: the routes you chose, the area
+   around you, or what is on screen. Answers are compressed, so a phone downloads far less.
+6. **Choosing a transit system.** The first time, the app asks which system to show (TTC,
    MiWay and so on) and then shows only that system's buses. The **system button** at the top
    changes it. Systems with no public live feed yet are listed greyed out, with the reason.
-6. **Buses and Stops buttons.** Each turns its layer on or off. With both on you see stops and
+7. **Buses and Stops buttons.** Each turns its layer on or off. With both on you see stops and
    buses together. Stops appear once you zoom in close, and come from the agency's schedule
    file (GTFS), which is downloaded in the background the first time it is needed.
-7. **Near me.** Use your location, or pick a spot on the map, and the map shows only buses
+8. **Near me.** Use your location, or pick a spot on the map, and the map shows only buses
    within 0.5, 1 or 2 km, closest first. Your location stays in your browser.
 
 ## Privacy and safety
@@ -57,6 +59,8 @@ Set these in your host's environment variables (Render: service, Environment). O
 | `MAP_CENTER` | Where the map opens, `latitude,longitude` | `41.88,-87.63` |
 | `MAP_ZOOM` | How close the map opens (2 to 18) | `12` |
 | `FEED_REFRESH_SECONDS` | Longest the app waits between feed requests (5 or more) | `10` |
+| `TRUSTED_PROXY_HOPS` | How many proxies sit in front of the app, so each visitor is rate limited on their own address (default 1) | `2` |
+| `CLIENT_IP_HEADER` | A header your host sets to the visitor's address, if it has one. Used instead of the proxy count | `True-Client-IP` |
 | `TILE_URL`, `TILE_ATTRIBUTION` | The map picture provider (defaults to OpenStreetMap) | |
 
 ### Transit systems

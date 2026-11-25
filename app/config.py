@@ -74,6 +74,7 @@ class Settings:
     rate_limit_reads: int = 30  # map refreshes per window
     rate_limit_read_window: int = 60
     trusted_proxy_hops: int = 1  # proxies in front of the app (Railway adds one)
+    client_ip_header: str = ""  # a header the host sets to the visitor's address, such as True-Client-IP
     # Transit systems and schedule data (stops, route names).
     use_builtin_systems: bool = False  # offer TTC, MiWay and the others; on when run from the environment
     static_timeout: float = 60.0  # seconds allowed to download a schedule file
@@ -99,5 +100,6 @@ class Settings:
             tile_url=os.environ.get("TILE_URL", "").strip() or d.tile_url,
             tile_attribution=os.environ.get("TILE_ATTRIBUTION", "").strip() or d.tile_attribution,
             trusted_proxy_hops=_number("TRUSTED_PROXY_HOPS", d.trusted_proxy_hops, int),
+            client_ip_header=os.environ.get("CLIENT_IP_HEADER", "").strip(),
             use_builtin_systems=os.environ.get("BUILTIN_SYSTEMS", "on").strip().lower() not in ("off", "0", "no", "false"),
         )
