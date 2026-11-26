@@ -33,7 +33,16 @@ the page, so there is always something to see.
    buses together. Stops appear once you zoom in close, and come from the agency's schedule
    file (GTFS), which is downloaded in the background the first time it is needed.
 8. **Near me.** Use your location, or pick a spot on the map, and the map shows only buses
-   within 0.5, 1 or 2 km, closest first. Your location stays in your browser.
+   within 0.5, 1 or 2 km, closest first. Your location stays in your browser. You can also type
+   an address and press Search: the server asks an address service (OpenStreetMap's Nominatim by
+   default, at most one request a second, results kept for a day, never your email or location).
+9. **Stops for chosen routes.** With routes chosen, the Stops button shows only the stops those
+   routes serve (read from the schedule file, so it can take a moment after the first start).
+10. **Next buses and alerts.** Tapping a stop lists the next buses due there (from the agency's
+    trip updates feed). A red badge shows current service alerts, with the ones on your chosen
+    routes first. Both appear only for systems that have those feeds.
+11. **Favorites.** Save routes and stops with the star button in their details. They are kept in
+    your browser, separately for each transit system, and listed under **Favorites**.
 
 ## Privacy and safety
 
@@ -61,6 +70,7 @@ Set these in your host's environment variables (Render: service, Environment). O
 | `FEED_REFRESH_SECONDS` | Longest the app waits between feed requests (5 or more) | `10` |
 | `TRUSTED_PROXY_HOPS` | How many proxies sit in front of the app, so each visitor is rate limited on their own address (default 1) | `2` |
 | `CLIENT_IP_HEADER` | A header your host sets to the visitor's address, if it has one. Used instead of the proxy count | `True-Client-IP` |
+| `GEOCODER_URL`, `GEOCODER_USER_AGENT` | The address search service and the name the app gives it (defaults suit OpenStreetMap's) | |
 | `TILE_URL`, `TILE_ATTRIBUTION` | The map picture provider (defaults to OpenStreetMap) | |
 
 ### Transit systems
@@ -75,6 +85,8 @@ system's name in capitals:
 | `SYSTEM_YRT_FEED_URL` | Makes YRT available with this vehicle positions address |
 | `SYSTEM_YRT_STOPS_URL` | The schedule zip (GTFS), for stops and route names |
 | `SYSTEM_YRT_FEED_HEADERS` | Headers such as an API key, as JSON |
+| `SYSTEM_YRT_TRIPS_URL` | Trip updates address, for next arrivals at a stop |
+| `SYSTEM_YRT_ALERTS_URL` | Service alerts address |
 
 The same three work for `BRAMPTON` and `GO`, and can replace the TTC and MiWay addresses
 (`SYSTEM_TTC_FEED_URL`, and so on). Set `BUILTIN_SYSTEMS=off` to use only `FEED_URL`.
@@ -120,10 +132,9 @@ locations and rate limits are kept in memory, so more workers would each have th
 - **Route lines depend on the schedule file.** Lines come from its shapes. If an agency leaves
   them out, the route is still tagged but no line is drawn. Only the most used path in each
   direction is shown.
-- **Typing an address.** Near me uses your location or a spot you tap. Looking up a typed
-  address needs a separate geocoding service.
 - **Checking a rider is on the right bus.** Today the app checks that a rider is moving at bus
   speed, not that they are on the route's path.
-- **Predicted arrival times.** Only current positions are shown.
+- **Arrival times need a trip updates feed.** TTC has one built in. Other systems show "not
+  available" until a `..._TRIPS_URL` is set.
 
 The earlier Website Navigator is still in the repository history (commit `393a1db`).

@@ -36,11 +36,15 @@
   var hintEl = $("stops-hint");
   var alertsEl = $("alerts");
   var alertsOpen = $("alerts-open");
+  var favsEl = $("favs");
+  var infoFav = $("info-fav");
   var pickEl = $("system-pick");
   var systemOpen = $("system-open");
 
   var STOPS_MIN_ZOOM = 14;
   var TAGS_KEY = "busTrackerTags";
+  var FAVS_KEY = "busTrackerFavs";
+  var MAX_FAVS = 30;
   var LAYERS_KEY = "busTrackerLayers";
   var SYSTEM_KEY = "busTrackerSystem";
   var MAX_TAGS = 20;
@@ -67,6 +71,8 @@
   var lastRequestKey = "";
   var pollSeq = 0;
   var busTimer = null;
+  var favs = { routes: [], stops: [] };
+  var infoKind = null; // what the info panel shows: {type: "stop", stop} or {type: "route", route}
   var arrivalsTimer = null;
   var arrivalsFor = null;
   var alertsData = [];
@@ -235,6 +241,8 @@
     $("info-source").textContent = sourceText(b);
     $("info-detail").textContent = ("Updated " + ago(b.age) + ". " + speedText(b.speed)).trim();
     infoEl.hidden = false;
+    infoKind = b.route ? { type: "route", route: b.route } : null;
+    renderInfoFav();
     if (center) map.setView(b.lat, b.lon);
   }
 
@@ -248,8 +256,120 @@
     $("info-source").textContent = "Bus stop";
     $("info-detail").textContent = stop.code ? "Stop number " + stop.code + "." : "";
     infoEl.hidden = false;
+    infoKind = { type: "stop", stop: stop };
+    renderInfoFav();
     showArrivals(stop);
   }
+
+  // ---------------------------------------------------------------- favorites
+
+  function favsKey() { return FAVS_KEY + (system && system.id ? ":" + system.id : ""); }
+
+  function loadFavs() {
+    var out = { routes: [], stops: [] };
+    try {
+      var raw = JSON.parse(localStorage.getItem(favsKey()) || "{}");
+      if (raw && Array.isArray(raw.routes)) {
+        out.routes = raw.routes.filter(function (r) { return typeof r === "string" && r.length > 0 && r.length <= 40; }).slice(0, MAX_FAVS);
+      }
+      if (raw && Array.isArray(raw.stops)) {
+        out.stops = raw.stops.filter(function (x) {
+          return x && typeof x.id === "string" && typeof x.name === "string" && isFinite(x.lat) && isFinite(x.lon);
+        }).slice(0, MAX_FAVS).map(function (x) {
+          return { id: x.id.slice(0, 40), name: x.name.slice(0, 80), code: typeof x.code === "string" ? x.code.slice(0, 20) : "", lat: Number(x.lat), lon: Number(x.lon) };
+        });
+      }
+    } catch (err) { /* start empty */ }
+    return out;
+  }
+
+  function saveFavs() {
+    try { localStorage.setItem(favsKey(), JSON.stringify(favs)); } catch (err) { /* storage can be off */ }
+  }
+
+  function isFavRoute(route) { return favs.routes.indexOf(route) >= 0; }
+  function isFavStop(id) { return favs.stops.some(function (x) { return x.id === id; }); }
+
+  function renderInfoFav() {
+    if (!infoKind) { infoFav.hidden = true; return; }
+    var saved = infoKind.type === "stop" ? isFavStop(infoKind.stop.id) : isFavRoute(infoKind.route);
+    var what = infoKind.type === "stop" ? "this stop" : "route " + infoKind.route;
+    infoFav.textContent = saved ? "★ Saved. Tap to remove" : "☆ Save " + what + " as favorite";
+    infoFav.setAttribute("aria-pressed", saved ? "true" : "false");
+    infoFav.hidden = false;
+  }
+
+  infoFav.addEventListener("click", function () {
+    if (!infoKind) return;
+    if (infoKind.type === "stop") {
+      var s = infoKind.stop;
+      if (isFavStop(s.id)) favs.stops = favs.stops.filter(function (x) { return x.id !== s.id; });
+      else if (favs.stops.length < MAX_FAVS) favs.stops.push({ id: s.id, name: s.name, code: s.code || "", lat: s.lat, lon: s.lon });
+    } else {
+      var r = infoKind.route;
+      if (isFavRoute(r)) favs.routes = favs.routes.filter(function (x) { return x !== r; });
+      else if (favs.routes.length < MAX_FAVS) favs.routes.push(r);
+    }
+    saveFavs();
+    renderInfoFav();
+    if (!favsEl.hidden) renderFavs();
+  });
+
+  function favRow(label, onGo, onRemove, removeLabel) {
+    var item = el("li");
+    var go = el("button", "action alt fav-go", label);
+    go.type = "button";
+    go.addEventListener("click", onGo);
+    var rm = el("button", "plain fav-remove", "Remove");
+    rm.type = "button";
+    rm.setAttribute("aria-label", removeLabel);
+    rm.addEventListener("click", onRemove);
+    item.appendChild(go);
+    item.appendChild(rm);
+    return item;
+  }
+
+  function renderFavs() {
+    var rl = $("favs-routes"), sl = $("favs-stops");
+    rl.textContent = "";
+    sl.textContent = "";
+    favs.routes.forEach(function (r) {
+      var shown = hasTag("route", r);
+      rl.appendChild(favRow("Route " + r + (routeNames[r] ? " " + routeNames[r] : "") + (shown ? " (on the map)" : ""), function () {
+        if (!hasTag("route", r)) addTag({ type: "route", value: r });
+        favsEl.hidden = true;
+      }, function () {
+        favs.routes = favs.routes.filter(function (x) { return x !== r; });
+        saveFavs(); renderFavs(); renderInfoFav();
+      }, "Remove route " + r + " from favorites"));
+    });
+    favs.stops.forEach(function (st) {
+      sl.appendChild(favRow(st.name + (st.code ? " (" + st.code + ")" : ""), function () {
+        favsEl.hidden = true;
+        if (!layers.stops) { layers.stops = true; saveLayers(); renderLayers(); }
+        map.setView(st.lat, st.lon, Math.max(STOPS_MIN_ZOOM + 1, map.zoom));
+        selectStop(st);
+        refreshStops();
+      }, function () {
+        favs.stops = favs.stops.filter(function (x) { return x.id !== st.id; });
+        saveFavs(); renderFavs(); renderInfoFav();
+      }, "Remove stop " + st.name + " from favorites"));
+    });
+    $("favs-routes-title").hidden = !favs.routes.length;
+    $("favs-stops-title").hidden = !favs.stops.length;
+    $("favs-empty").hidden = !!(favs.routes.length || favs.stops.length);
+  }
+
+  $("favs-open").addEventListener("click", function () {
+    infoEl.hidden = true;
+    shareEl.hidden = true;
+    nearEl.hidden = true;
+    alertsEl.hidden = true;
+    clearArrivals();
+    favsEl.hidden = !favsEl.hidden;
+    if (!favsEl.hidden) renderFavs();
+  });
+  $("favs-close").addEventListener("click", function () { favsEl.hidden = true; });
 
   // ---------------------------------------------------------------- next arrivals at a stop
 
@@ -546,7 +666,7 @@
 
   function drawStops(data) {
     if (data.state === "loading") {
-      setHint("Loading the stops...");
+      setHint(tags.length ? "Loading the stops for your routes..." : "Loading the stops...");
       stopRetry = setTimeout(refreshStops, 4000);
       return;
     }
@@ -568,7 +688,8 @@
     });
     removeStopMarkers(keep);
     if (data.truncated) setHint("Showing the stops nearest the middle. Zoom in to see more.");
-    else setHint(data.stops.length ? "" : "No stops in this view.");
+    else if (!data.stops.length) setHint(data.filtered ? "No stops on your chosen routes in this view." : "No stops in this view.");
+    else setHint("");
   }
 
   function refreshStops() {
@@ -585,6 +706,8 @@
     var b = map.getBounds();
     var mine = ++stopToken;
     var query = ["south", "west", "north", "east"].map(function (k) { return k + "=" + b[k].toFixed(5); }).join("&");
+    var only = tags.length && tags.every(function (t) { return t.type === "route"; }) ? chosenRoutes() : [];
+    if (only.length) query += "&routes=" + encodeURIComponent(only.join(","));
     fetch("/api/stops?" + systemQuery() + "&" + query, { cache: "no-store" })
       .then(function (response) {
         if (response.status === 429) { stopRetry = setTimeout(refreshStops, 15000); return null; }
@@ -669,6 +792,9 @@
     renderAlertsBadge();
     Object.keys(routeLines).forEach(removeLine);
     tags = loadTags();
+    favs = loadFavs();
+    favsEl.hidden = true;
+    infoKind = null;
     fitPending = tags.length > 0;
     renderTags();
     syncLines();
@@ -779,6 +905,7 @@
     infoEl.hidden = true;
     shareEl.hidden = true;
     alertsEl.hidden = true;
+    favsEl.hidden = true;
     clearArrivals();
     nearEl.hidden = !nearEl.hidden;
     if (!nearEl.hidden) renderNear();
@@ -815,6 +942,42 @@
       },
       { enableHighAccuracy: false, timeout: 15000, maximumAge: 60000 }
     );
+  });
+
+  // Typed address: asked of our server only when the person presses Search (never while typing).
+  var addressBusy = false;
+  $("near-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var text = $("near-address").value.replace(/\s+/g, " ").trim();
+    var results = $("near-results");
+    results.textContent = "";
+    showNearError("");
+    if (text.length < 3) { showNearError("Type at least 3 letters of an address."); return; }
+    if (addressBusy || !system) return;
+    addressBusy = true;
+    $("near-search").disabled = true;
+    fetch("/api/geocode?" + systemQuery() + "&q=" + encodeURIComponent(text), { cache: "no-store" })
+      .then(function (response) {
+        return response.json().catch(function () { return {}; }).then(function (body) { return { ok: response.ok, body: body }; });
+      })
+      .then(function (r) {
+        if (!r.ok) { showNearError(r.body.error || "The address search is not available right now."); return; }
+        if (!r.body.places.length) { showNearError("No match near " + (system.name || "this system") + ". Try adding the street name or city."); return; }
+        r.body.places.forEach(function (place) {
+          var item = el("li");
+          var pick = el("button", "bus-row", place.name);
+          pick.type = "button";
+          pick.addEventListener("click", function () {
+            results.textContent = "";
+            stopPicking();
+            setNear(place.lat, place.lon);
+          });
+          item.appendChild(pick);
+          results.appendChild(item);
+        });
+      })
+      .catch(function () { showNearError("The address search is not available right now."); })
+      .then(function () { addressBusy = false; $("near-search").disabled = false; });
   });
 
   $("near-pick").addEventListener("click", function () {
@@ -968,6 +1131,7 @@
     });
     syncLines();
     renderAlertsBadge();
+    if (layers.stops) scheduleStops();
     var selected = buses.filter(function (b) { return b.id === selectedId; })[0];
     if (selected && !isShown(selected)) {
       clearSelection();

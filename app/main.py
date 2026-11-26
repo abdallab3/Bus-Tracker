@@ -12,6 +12,7 @@ from flask import Flask, jsonify, request, send_from_directory
 
 from .config import Settings
 from .geo import distance_m
+from .geocode import GeocodeError, Geocoder, clean_query
 from .limiter import RateLimiter
 from .riders import RiderError, RiderStore
 from .systems import SYSTEM_ID, build_registry
@@ -112,7 +113,7 @@ ARRIVAL_WINDOW_SECONDS = 6 * 3600
 MAX_ALERTS_SENT = 50
 
 
-def create_app(settings=None, feed=None, riders=None, clock=time.time, environ=None, registry=None):
+def create_app(settings=None, feed=None, riders=None, clock=time.time, environ=None, registry=None, geocoder=None):
     settings = settings or Settings.from_env()
     registry = registry or build_registry(settings, feed=feed, clock=clock, environ=environ)
     riders = riders or RiderStore(settings, clock=clock)
@@ -123,6 +124,8 @@ def create_app(settings=None, feed=None, riders=None, clock=time.time, environ=N
     starts = RateLimiter(settings.rate_limit_starts, settings.rate_limit_start_window)
     stop_reads = RateLimiter(settings.rate_limit_stops, settings.rate_limit_stops_window)
     line_reads = RateLimiter(settings.rate_limit_stops, settings.rate_limit_stops_window)
+    geocode_reads = RateLimiter(settings.rate_limit_geocode, settings.rate_limit_geocode_window)
+    geocoder = geocoder or Geocoder(settings.geocoder_url, settings.geocoder_agent)
 
     app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
     app.config["MAX_CONTENT_LENGTH"] = 4 * 1024  # every request from the page is tiny
@@ -284,8 +287,34 @@ def create_app(settings=None, feed=None, riders=None, clock=time.time, environ=N
             return jsonify(error="Zoom in to see stops."), 400
         static = registry.static(system.id)
         static.ensure()
-        found, truncated = static.stops_in(south, west, north, east, settings.max_stops) if static.status == "ready" else ([], False)
-        resp = jsonify(state=static.status, stops=found, truncated=truncated)
+        state, only = static.status, None
+        wanted = [r.strip() for r in (request.args.get("routes") or "").split(",") if r.strip()][:MAX_ROUTE_FILTERS]
+        if wanted and state == "ready":
+            if static.route_stops_status != "ready":
+                state = "loading"  # which stops a route serves is still being read
+            else:
+                only = static.stop_ids_for(wanted)  # None when the schedule cannot say
+        found, truncated = static.stops_in(south, west, north, east, settings.max_stops, only) if state == "ready" else ([], False)
+        resp = jsonify(state=state, stops=found, truncated=truncated, filtered=only is not None)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    @app.get("/api/geocode")
+    def geocode():
+        blocked = limited(geocode_reads, "Address searches are happening too often. Please wait a moment.")
+        if blocked:
+            return blocked
+        system, error = pick_system(request.args.get("system"))
+        if error:
+            return error
+        query = clean_query(request.args.get("q"))
+        if not query:
+            return jsonify(error="Type at least 3 letters of an address."), 400
+        try:
+            places = geocoder.search(query, system.center)
+        except GeocodeError as err:
+            return jsonify(error=str(err)), 503
+        resp = jsonify(places=places)
         resp.headers["Cache-Control"] = "no-store"
         return resp
 

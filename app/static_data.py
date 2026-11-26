@@ -22,6 +22,7 @@ MAX_STOPS = 150_000
 MAX_ROUTES = 20_000
 MAX_TRIP_FILE = 250_000_000
 MAX_SHAPE_FILE = 400_000_000
+MAX_STOP_TIMES_FILE = 900_000_000
 THIN_METERS = 12  # route lines drop points closer together than this
 MAX_LINE_POINTS = 6000  # most points sent for one route
 
@@ -76,6 +77,8 @@ def parse_routes(rows):
         if not route_id:
             continue
         short = " ".join((row.get("route_short_name") or "").split())[:20]
+        if short.isdigit() and short.strip("0"):
+            short = short.lstrip("0")  # some agencies pad numbers (YRT's 004): riders say 4
         long = " ".join((row.get("route_long_name") or "").split())[:80]
         routes[route_id] = {"short": short, "long": long}
         if len(routes) >= MAX_ROUTES:
@@ -98,6 +101,29 @@ def parse_trip_shapes(rows):
         ranked = sorted(group, key=lambda sid: (-group[sid], sid))
         chosen.setdefault(route_id, []).extend(ranked[: 1 if direction else 2])
     return {route_id: list(dict.fromkeys(ids)) for route_id, ids in chosen.items()}
+
+
+def parse_route_stops(trip_rows, time_rows):
+    """Which stops each route serves: {route_id: set of stop ids}, from trips and stop_times."""
+    trip_route = {}
+    for row in trip_rows:
+        trip_id = (row.get("trip_id") or "").strip()
+        route_id = (row.get("route_id") or "").strip()
+        if trip_id and route_id:
+            trip_route[trip_id] = route_id
+    served = {}
+    last_trip, last_set = None, None
+    for row in time_rows:
+        trip_id = row.get("trip_id")
+        if trip_id != last_trip:  # stop_times lists one trip's rows together
+            last_trip = trip_id
+            route_id = trip_route.get((trip_id or "").strip())
+            last_set = served.setdefault(route_id, set()) if route_id else None
+        if last_set is not None:
+            stop_id = (row.get("stop_id") or "").strip()
+            if stop_id:
+                last_set.add(stop_id[:40])
+    return served
 
 
 def _thin(points):
@@ -157,6 +183,8 @@ class StaticStore:
         self._loading = False
         self._route_lines = {}
         self._lines_loaded = None
+        self._route_stops = {}
+        self._route_stops_loaded = None
         self.error = None
 
     @property
@@ -176,6 +204,13 @@ class StaticStore:
         if not self.url:
             return "off"
         return "ready" if self._lines_loaded is not None else "loading"
+
+    @property
+    def route_stops_status(self):
+        """Which stops each route serves load last: off, loading or ready."""
+        if not self.url:
+            return "off"
+        return "ready" if self._route_stops_loaded is not None else "loading"
 
     def ensure(self):
         """Start loading if the data is missing or old. Returns at once."""
@@ -226,6 +261,19 @@ class StaticStore:
             self._route_lines = lines
             self._lines_loaded = self.clock()
 
+    def _load_route_stops(self, archive):
+        """Which stops a route serves is an extra too: without it the stops button shows every stop."""
+        served = {}
+        try:
+            served = parse_route_stops(
+                _rows(archive, "trips.txt", MAX_TRIP_FILE), _rows(archive, "stop_times.txt", MAX_STOP_TIMES_FILE)
+            )
+        except Exception:
+            served = {}
+        with self._lock:
+            self._route_stops = served
+            self._route_stops_loaded = self.clock()
+
     def _run(self):
         error = None
         try:
@@ -242,6 +290,7 @@ class StaticStore:
                         self._stops, self._routes, self._loaded = stops, routes, self.clock()
                         self._failed, self.error = None, None
                     self._load_lines(archive)
+                    self._load_route_stops(archive)
         except StaticError as e:
             error = str(e)
         except zipfile.BadZipFile:
@@ -271,11 +320,28 @@ class StaticStore:
             found.extend(lines.get(rid, []))
         return _fit(found)
 
-    def stops_in(self, south, west, north, east, limit):
-        """Stops inside the box, nearest to its middle first when there are too many."""
+    def stop_ids_for(self, routes):
+        """The ids of stops served by any of the routes (named like 504 or by code), or None if unknown."""
+        with self._lock:
+            names, served = self._routes, self._route_stops
+        if not served:
+            return None
+        ids = set()
+        for route in routes:
+            for rid in {r for r, info in names.items() if r == route or info["short"] == route} | {route}:
+                ids |= served.get(rid, set())
+        return ids
+
+    def stops_in(self, south, west, north, east, limit, only=None):
+        """Stops inside the box, nearest to its middle first when there are too many.
+
+        `only` is an optional set of stop ids: nothing else is returned."""
         with self._lock:
             stops = self._stops
-        inside = [s for s in stops if south <= s["lat"] <= north and west <= s["lon"] <= east]
+        inside = [
+            s for s in stops
+            if south <= s["lat"] <= north and west <= s["lon"] <= east and (only is None or s["id"] in only)
+        ]
         truncated = len(inside) > limit
         if truncated:
             mid_lat, mid_lon = (south + north) / 2, (west + east) / 2
@@ -312,6 +378,21 @@ class DemoStops:
     def route_lines(self, route):
         return {"A": [self._loop], "B": [self._line]}.get(route, [])
 
-    def stops_in(self, south, west, north, east, limit):
-        inside = [s for s in self._stops if south <= s["lat"] <= north and west <= s["lon"] <= east]
+    route_stops_status = "ready"
+
+    def stop_ids_for(self, routes):
+        # The demo's two routes share one loop; route B serves every other stop.
+        ids = set()
+        for route in routes:
+            if route == "A":
+                ids |= {s["id"] for s in self._stops}
+            elif route == "B":
+                ids |= {s["id"] for i, s in enumerate(self._stops) if i % 2 == 0}
+        return ids
+
+    def stops_in(self, south, west, north, east, limit, only=None):
+        inside = [
+            s for s in self._stops
+            if south <= s["lat"] <= north and west <= s["lon"] <= east and (only is None or s["id"] in only)
+        ]
         return inside[:limit], len(inside) > limit

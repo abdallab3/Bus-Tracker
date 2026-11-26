@@ -29,6 +29,7 @@
           <button id="layer-stops" type="button" class="tool" aria-pressed="false">Stops</button>
         </div>
         <button id="near-open" type="button" class="tool">Near me</button>
+        <button id="favs-open" type="button" class="tool" aria-label="Favorites">★ Saved</button>
       </div>
       <div id="tags-row" class="tags-row" hidden>
         <ul id="tags" class="tags" aria-label="Buses shown on the map"></ul>
@@ -56,8 +57,20 @@
         <h2 id="info-title"></h2>
         <p id="info-source"></p>
         <p id="info-detail"></p>
+        <button id="info-fav" type="button" class="action alt fav-btn" aria-pressed="false" hidden></button>
         <h3 id="arrivals-title" hidden>Next buses here</h3>
         <ul id="info-arrivals" class="arrivals" hidden></ul>
+      </section>
+
+      <section id="favs" class="panel sheet" hidden aria-labelledby="favs-title">
+        <button id="favs-close" type="button" class="plain close" aria-label="Close favorites">Close</button>
+        <h2 id="favs-title">Your favorites</h2>
+        <p id="favs-empty" class="fine">Nothing saved yet. Tap a bus or a stop on the map, then tap Save as favorite.</p>
+        <h3 id="favs-routes-title" hidden>Routes</h3>
+        <ul id="favs-routes" class="favs-list"></ul>
+        <h3 id="favs-stops-title" hidden>Stops</h3>
+        <ul id="favs-stops" class="favs-list"></ul>
+        <p class="fine">Favorites are saved in this browser only, separately for each transit system.</p>
       </section>
 
       <button id="alerts-open" type="button" class="alerts-open" hidden></button>
@@ -74,6 +87,14 @@
           <button id="near-locate" type="button" class="action">Use my location</button>
           <button id="near-pick" type="button" class="action alt">Pick a spot on the map</button>
         </div>
+        <form id="near-form" class="near-form" autocomplete="off">
+          <label for="near-address">Or type an address or place</label>
+          <div class="row">
+            <input id="near-address" type="text" maxlength="120" autocapitalize="off" spellcheck="false" placeholder="For example: 100 Queen St W">
+            <button id="near-search" type="submit" class="action">Search</button>
+          </div>
+        </form>
+        <ul id="near-results" class="near-list"></ul>
         <label for="near-radius">Show buses within</label>
         <select id="near-radius"></select>
         <ul id="near-list" class="near-list"></ul>

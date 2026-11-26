@@ -84,6 +84,10 @@ class Settings:
     rate_limit_stops: int = 40  # stop lookups per window
     rate_limit_stops_window: int = 60
     max_stops: int = 500  # most stops sent for one map view
+    geocoder_url: str = ""  # address search service (Nominatim style); empty uses OpenStreetMap's
+    geocoder_agent: str = ""  # User-Agent sent to it; empty uses a built-in one without any personal details
+    rate_limit_geocode: int = 10  # address searches per visitor per window
+    rate_limit_geocode_window: int = 60
 
     @classmethod
     def from_env(cls):
@@ -101,5 +105,7 @@ class Settings:
             tile_attribution=os.environ.get("TILE_ATTRIBUTION", "").strip() or d.tile_attribution,
             trusted_proxy_hops=_number("TRUSTED_PROXY_HOPS", d.trusted_proxy_hops, int),
             client_ip_header=os.environ.get("CLIENT_IP_HEADER", "").strip(),
+            geocoder_url=os.environ.get("GEOCODER_URL", "").strip(),
+            geocoder_agent=os.environ.get("GEOCODER_USER_AGENT", "").strip()[:200],
             use_builtin_systems=os.environ.get("BUILTIN_SYSTEMS", "on").strip().lower() not in ("off", "0", "no", "false"),
         )

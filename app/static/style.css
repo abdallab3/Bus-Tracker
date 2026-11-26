@@ -533,3 +533,12 @@ button.plain {
   .sm-marker.glide { transition: none; }
   button:active { transform: none !important; }
 }
+
+.fav-btn { margin-top: 0.5rem; }
+.favs-list { margin: 0; padding: 0; list-style: none; }
+.favs-list li { display: flex; gap: 0.4rem; align-items: stretch; margin: 0.3rem 0; }
+.favs-list .fav-go { flex: 1; text-align: left; }
+.favs-list .fav-remove { flex: none; }
+
+.near-form input { flex: 1; min-width: 0; padding: 0.5rem; font: inherit; color: var(--ink); background: var(--field); border: 2px solid var(--field-line); border-radius: 8px; }
+.near-form .row { margin-top: 0.25rem; }
