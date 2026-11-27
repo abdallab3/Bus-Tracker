@@ -216,22 +216,22 @@ class DemoStopsTests(unittest.TestCase):
 class TheSystemList(unittest.TestCase):
     def test_built_in_systems_are_listed_with_reasons_when_not_available(self):
         systems = {s.id: s for s in build_systems(Settings(use_builtin_systems=True), environ={})}
-        self.assertTrue(systems["ttc"].available and systems["miway"].available)
-        for sid in ("yrt", "brampton", "go"):
+        self.assertTrue(all(systems[i].available for i in ("ttc", "miway", "yrt")))
+        for sid in ("brampton", "go"):
             self.assertFalse(systems[sid].available)
             self.assertTrue(systems[sid].note)
 
     def test_an_address_in_the_environment_makes_a_system_available(self):
-        env = {"SYSTEM_YRT_FEED_URL": "https://yrt.example/vp", "SYSTEM_YRT_FEED_HEADERS": '{"x-api-key": "k"}'}
+        env = {"SYSTEM_GO_FEED_URL": "https://go.example/vp", "SYSTEM_GO_FEED_HEADERS": '{"x-api-key": "k"}'}
         systems = {s.id: s for s in build_systems(Settings(use_builtin_systems=True), environ=env)}
-        self.assertTrue(systems["yrt"].available)
-        self.assertEqual(systems["yrt"].headers, (("x-api-key", "k"),))
-        self.assertEqual(systems["yrt"].note, "")
+        self.assertTrue(systems["go"].available)
+        self.assertEqual(systems["go"].headers, (("x-api-key", "k"),))
+        self.assertEqual(systems["go"].note, "")
 
     def test_only_web_addresses_are_accepted(self):
-        env = {"SYSTEM_YRT_FEED_URL": "file:///etc/passwd", "SYSTEM_TTC_STOPS_URL": "ftp://x"}
+        env = {"SYSTEM_GO_FEED_URL": "file:///etc/passwd", "SYSTEM_TTC_STOPS_URL": "ftp://x"}
         systems = {s.id: s for s in build_systems(Settings(use_builtin_systems=True), environ=env)}
-        self.assertFalse(systems["yrt"].available)
+        self.assertFalse(systems["go"].available)
         self.assertTrue(systems["ttc"].stops_url.startswith("http"))
 
     def test_the_old_feed_url_setting_is_kept_as_its_own_system_unless_it_is_a_built_in_one(self):

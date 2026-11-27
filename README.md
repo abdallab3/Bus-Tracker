@@ -75,10 +75,10 @@ Set these in your host's environment variables (Render: service, Environment). O
 
 ### Transit systems
 
-TTC and MiWay are built in. YRT, Brampton Transit and GO Transit are listed but need a live feed
-address first (YRT shares it after a request form, GO needs a Metrolinx key, and no public
+TTC, MiWay and YRT are built in. Brampton Transit and GO Transit are listed but need a live feed
+address first (GO needs a Metrolinx key, and no public
 Brampton feed was found). Once you have one, add it without changing any code, using the
-system's name in capitals:
+system's name in capitals (YRT is shown as the example; it already has its addresses built in):
 
 | Variable | What it does |
 | --- | --- |

@@ -63,7 +63,10 @@ BUILTIN = (
         city="York Region (Vaughan, Markham, Richmond Hill)",
         center=(43.8561, -79.3370),
         zoom=11,
-        note="York Region Transit shares its live data after a request form is submitted.",
+        feed_url="https://rtu.york.ca/gtfsrealtime/VehiclePositions",
+        stops_url="https://www.yrt.ca/google/google_transit.zip",
+        trips_url="https://rtu.york.ca/gtfsrealtime/TripUpdates",
+        alerts_url="https://storage.googleapis.com/transit-terminal-alerts-bucket-production/yrt.pb",
     ),
     System(
         id="brampton",
