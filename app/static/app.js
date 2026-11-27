@@ -73,6 +73,7 @@
   var busTimer = null;
   var favs = { routes: [], stops: [] };
   var infoKind = null; // what the info panel shows: {type: "stop", stop} or {type: "route", route}
+  var stopFilterKey = "";
   var arrivalsTimer = null;
   var arrivalsFor = null;
   var alertsData = [];
@@ -692,6 +693,21 @@
     else setHint("");
   }
 
+  // The routes whose stops to show: the chosen routes, plus the route of each chosen bus.
+  function stopRoutes() {
+    var routes = [];
+    for (var i = 0; i < tags.length; i++) {
+      var t = tags[i], r = t.value;
+      if (t.type === "bus") {
+        var b = buses.filter(function (x) { return x.label === t.value; })[0];
+        r = b && b.route;
+      }
+      if (!r) return []; // a tag with no known route: show every stop rather than hide some wrongly
+      if (routes.indexOf(r) < 0) routes.push(r);
+    }
+    return routes;
+  }
+
   function refreshStops() {
     clearTimeout(stopTimer);
     clearTimeout(stopRetry);
@@ -706,8 +722,12 @@
     var b = map.getBounds();
     var mine = ++stopToken;
     var query = ["south", "west", "north", "east"].map(function (k) { return k + "=" + b[k].toFixed(5); }).join("&");
-    var only = tags.length && tags.every(function (t) { return t.type === "route"; }) ? chosenRoutes() : [];
+    var only = stopRoutes();
     if (only.length) query += "&routes=" + encodeURIComponent(only.join(","));
+    // A different route choice means the stops on screen are the wrong ones: clear them now,
+    // so nothing stale stays while the new answer is loading.
+    var filterKey = only.slice().sort().join(",");
+    if (filterKey !== stopFilterKey) { stopFilterKey = filterKey; removeStopMarkers(); }
     fetch("/api/stops?" + systemQuery() + "&" + query, { cache: "no-store" })
       .then(function (response) {
         if (response.status === 429) { stopRetry = setTimeout(refreshStops, 15000); return null; }
@@ -1131,7 +1151,7 @@
     });
     syncLines();
     renderAlertsBadge();
-    if (layers.stops) scheduleStops();
+    if (layers.stops) { clearTimeout(stopTimer); refreshStops(); }
     var selected = buses.filter(function (b) { return b.id === selectedId; })[0];
     if (selected && !isShown(selected)) {
       clearSelection();
